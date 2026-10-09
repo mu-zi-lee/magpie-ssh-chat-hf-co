@@ -1,115 +1,74 @@
 # Magpie SSH Chat · Hugging Face
 
-将 `ssh chat.hf.co` 接入 Magpie / OpenCode，并提供本地 OpenAI 兼容 HTTP 接口。当前为 **0.3.0 实验版**，SSH、远端终端会话和匿名密钥均由 JavaScript 实现，图标随插件打包。
+通过 `ssh chat.hf.co` 在 Magpie 中使用 Hugging Face 匿名聊天，无需 HF 账号或 API Key。也可独立运行，为 OpenCode 等客户端提供 OpenAI 兼容的 Chat Completions 接口。
 
-已实测：匿名 SSH 聊天、实验性 JSON 工具调用闭环、动态完整模型目录。工具调用由提示词生成并经 JSON Schema 校验，**不是 HF SSH 原生 Function Calling**。插件不会执行工具；执行仍由 Agent 负责。
+**当前为实验版。** 支持文本对话和实验性工具调用；目前仅可调用 `Qwen/Qwen3.8-27B`，尚未实现 HF 登录和模型切换。匿名额度由 HF 决定，无法查询，也未验证无限使用。
 
-## 模型与访问范围
+## 在 Magpie 中使用
 
-完整目录来自公开的 [HF 模型目录](https://router.huggingface.co/v1/models)，每 15 分钟按需刷新，失败时保留缓存。
-
-2026-10-09 实测目录有 **128 个模型**，数量会变化。SSH `/model` 明确说明：匿名只能使用 `Qwen/Qwen3.8-27B`，其他模型需要 `/login`。本版尚未自动化 HF 登录与模型切换。
-
-- `/v1/models` 返回完整目录，保留上游模型及供应商信息，并附加 `ssh_available`、`ssh_access`、`ssh_tool_calling`、`ssh_billing`。默认模型标为 `anonymous_no_account`，其余模型的 SSH 计费标为 `unverified`。
-- Magpie 的活动模型池只包含匿名已验证可用的 Qwen。其他目录项目前不能通过本插件调用，返回 `403 hf_login_required`。
-- 目录中的价格、上下文长度、`supports_tools` 是上游 HTTP 供应商信息，不能据此推断 SSH 通道能力或费用。
-- 未验证无限额度；界面要求登录后才能切换模型，匿名限额由 HF 决定。
-
-## 安装到 Magpie
-
-在 Magpie 的插件页添加以下仓库即可：
+在 Magpie 插件页添加仓库：
 
 ```text
 github:mu-zi-lee/magpie-ssh-chat-hf-co
 ```
 
-也可以使用一条命令：
+或通过命令安装：
 
 ```sh
 magpie plugin add github:mu-zi-lee/magpie-ssh-chat-hf-co
 ```
 
-Magpie 自动准备插件的 Bun 运行时并安装 JavaScript 依赖。插件在首次加载时自动登记匿名账号，首次请求时自动生成内存中的匿名 SSH 密钥、保存服务器指纹并建立连接。已有该供应商账号时保留原账号。
+安装后，插件会自动登记匿名账号。在模型选择器中选择 **Hugging Face SSH Chat (experimental)** 下的 `Qwen/Qwen3.8-27B` 即可使用，供应商 ID 为 `hf-ssh`。
 
-**不需要自行安装 Python、OpenSSH、Node.js、编译工具，不需要执行安装脚本、填 API Key、手动登录或启动 HTTP 服务。** 服务器仍需能访问 HF 模型目录和 `chat.hf.co:22`。
+Magpie 会准备运行时和依赖，无需额外安装 Python、OpenSSH 或 Node.js，也无需手动启动服务。运行 Magpie 的机器需能访问 `chat.hf.co:22` 和 [HF 模型目录](https://router.huggingface.co/v1/models)。SSH 连接直接发起，不经过 Magpie 的 HTTP 代理。
 
-供应商 ID 为 `hf-ssh`，模型 ID 为 `Qwen/Qwen3.8-27B`。已使用 Magpie 官方 `internal/plugin/host.js` 在清空 PATH 的独立目录验证自动账号登记、模型枚举和真实 SSE 请求；独立 AI SDK Agent 的读取、精确复制、最终回复三轮 SSE 工具循环已通过。完整 Magpie 应用 / 网关尚未验收。JavaScript SSH 不使用操作系统的 PTY 或系统命令，Windows 兼容性尚未实机验证。
+## 供其他客户端使用
 
-插件的选项可配置：
-
-```json
-{
-  "timeoutMs": 150000,
-  "requestTimeoutMs": 210000,
-  "maxPromptChars": 8000,
-  "maxQueuedRequests": 8,
-  "connectRetries": 1,
-  "autoConnect": true
-}
-```
-
-这些选项有默认值，无需配置。`autoConnect: false` 可关闭加载时的匿名账号登记。默认并发为 1，最多保留 8 个请求（包含正在执行的请求）；超过时 JSON 和 SSE 请求均返回 `503 ssh_queue_full` 和 `Retry-After`。取消的等待请求不会发送给 HF。每个请求创建独立 SSH 会话，并发送完整消息历史，避免不同对话共享状态。Magpie 直接调用插件的 `fetch`。
-
-发送提示词前遇到短暂网络故障时默认重连一次；开始发送后不会自动重放请求。主机指纹变化不重试。目录刷新失败时保留旧目录或默认模型，并等待 30 秒再按需重试。
-
-### 独立 OpenAI 兼容接口
-
-此模式供不通过 Magpie 的客户端使用，独立运行时才需要 Bun 或 Node.js 20+。它不是 Magpie 插件安装步骤。
+独立服务需要 Bun 或 Node.js 20+。以 Bun 为例：
 
 ```sh
-bun install --ignore-scripts
+git clone https://github.com/mu-zi-lee/magpie-ssh-chat-hf-co.git
+cd magpie-ssh-chat-hf-co
+bun install --frozen-lockfile --ignore-scripts
 bun scripts/serve.mjs
-# 仅监听 127.0.0.1:5695；MAGPIE_HF_PORT 可修改端口
 ```
 
-客户端配置：Base URL 为 `http://127.0.0.1:5695/v1`，API Key 填 `anonymous`，模型填 `Qwen/Qwen3.8-27B`。本地服务不校验 API Key。
+服务默认仅监听本机 `127.0.0.1:5695`，可用环境变量 `MAGPIE_HF_PORT` 修改端口。客户端填写：
+
+| 配置项 | 值 |
+| --- | --- |
+| Base URL | `http://127.0.0.1:5695/v1` |
+| API Key | `anonymous`（占位值，本地服务不校验） |
+| Model | `Qwen/Qwen3.8-27B` |
+
+发送一次对话：
 
 ```sh
-curl http://127.0.0.1:5695/v1/models
-
 curl http://127.0.0.1:5695/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{"model":"Qwen/Qwen3.8-27B","messages":[{"role":"user","content":"你好"}]}'
-
-curl -N http://127.0.0.1:5695/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{"model":"Qwen/Qwen3.8-27B","messages":[{"role":"user","content":"你好"}],"stream":true}'
 ```
 
-支持 `messages` 中的 system/developer/user/assistant/tool、文本内容、`tools`、`tool_choice`、`parallel_tool_calls` 和 SSE。返回标准 `tool_calls`、调用 ID 及 `finish_reason`。
+接口支持文本 `messages`、`tools`、`tool_choice`、`parallel_tool_calls` 和 `stream: true`。`GET /v1/models` 返回 HF 公开模型目录，其中 `ssh_available: true` 表示本插件可调用；其他模型返回 `403 hf_login_required`。目录中的价格、上下文长度和工具能力来自 HTTP 供应商，不代表 SSH 通道能力。
 
-**SSE 是缓冲输出**：等待 SSH 生成时发送心跳，完整回复校验通过后输出内容或工具调用，并结束于 `[DONE]`。未完成或非法 JSON 不会交给工具执行端。
+## 使用前须知
 
-## 开发与可选验证
+- **工具调用通过提示词实现。** 插件解析并校验模型生成的 JSON，再返回标准 `tool_calls`，工具由客户端执行。这不是 HF SSH 原生 Function Calling。
+- **SSE 为缓冲输出。** 等待期间发送心跳，完整回复校验通过后才输出内容或工具调用，不会逐 token 推送。
+- **上下文较小。** 完整提示词最多 8000 字符，包含历史、工具定义和协议指令；超限返回 `400 context_length_exceeded`。回复 JSON 最多 4000 字符，超限返回 `reply_too_large`。长对话需压缩历史，大文件需分步处理。
+- **兼容范围有限。** 仅支持文本；`max_tokens` / `max_completion_tokens` 仅作为软目标，`temperature`、`top_p`、`seed` 和惩罚项不生效；`stop`、`response_format`、logprobs 和旧版 functions 协议不支持。
+- **请求串行执行。** 默认最多容纳 8 个请求，包含正在执行的请求；队列满时返回 `503 ssh_queue_full`。开始发送后不会自动重试。
+- **上游终端界面可能变化。** 格式错误或界面截断会导致请求失败。已验证 Magpie 官方插件宿主和独立 AI SDK 工具循环；完整 Magpie 应用 / 网关、OpenCode Agent 和 Windows 实机仍待验证。
 
-使用 Magpie 时无须执行以下步骤。本地开发者可以运行：
+对话、系统提示词、工具定义和工具结果都会发送给 `chat.hf.co`。插件使用内存中的临时匿名 SSH 密钥；首次连接保存服务器指纹，之后拒绝指纹变化，不读取个人 SSH 密钥或配置。
+
+## 开发
 
 ```sh
 bun install --frozen-lockfile --ignore-scripts
-bun test                      # 离线测试，无 HF 请求
-bun scripts/probe.mjs --models # 真实 SSH 探针，读取访问限制
-bun scripts/smoke.mjs          # 真实两轮 JSON 工具调用；工具结果为测试数据
-bun scripts/smoke-http.mjs     # 验证真实 HTTP SSE，完成后自动退出
-bun scripts/smoke-host.mjs /path/to/magpie/internal/plugin/host.js
-# 官方宿主验证：PATH 为空、自动登记账号、不调用登录 RPC
-bun scripts/smoke-agent.mjs    # 真实 AI SDK Agent：临时文件读取、精确复制与 SSE 工具循环
+bun test  # 离线测试，不请求 HF
 ```
 
-探针和 smoke 结果写入 `.local/`，不加入 Git。探针包含终端原始数据；请勿提交含个人对话的诊断文件。
+架构、验证记录和后续计划见 [协议文档](docs/PROTOCOL.md)。问题反馈请提交 [Issue](https://github.com/mu-zi-lee/magpie-ssh-chat-hf-co/issues)。
 
-## 当前限制
-
-- HF 的终端界面不是稳定 API。UI 修改、模型不遵守格式、终端换行或截断会返回错误。
-- HF SSH 输入框实测最多接收 8000 字符。完整提示（含历史、工具定义和兼容层指令）超限时在连接前返回 `400 context_length_exceeded`，请压缩历史或减少工具。`maxPromptChars` 可降低限制，不能提高上游上限。Magpie 上报保守的 2000-token 上下文预算，实际仍以字符校验为准。
-- 回复 JSON 对象最多 4000 字符；超过范围明确报错，不会自动截断历史或回复。大文件请用小范围补丁或分步编辑。
-- 内部虚拟终端为 8192 列、64 行，配合代码块输出，避免 HF 界面的 Markdown 转义与主动折行破坏 JSON。终端自动折行会还原，保留中文和空格。上游违反格式或界面自行截断时仍可能失败。
-- 暂不支持图片、音频、原生推理流和原生结构化输出。客户端常附带的 `max_tokens` / `max_completion_tokens` 转为提示词里的软目标，不是硬性 token 上限；`temperature`、`top_p`、`seed` 和惩罚项不生效。响应头 `x-hf-ssh-soft-token-limit` 和 `x-hf-ssh-ignored-parameters` 明确说明这两种情况。`stop`、`response_format`、logprobs 和旧版 functions 协议仍返回 400。
-- `tools` 的 JSON Schema 校验不验证自定义 `format`。不自动重试格式失败、限流或已经开始发送的请求。取消和超时会断开 SSH 并释放队列；上游思考时间也计入超时。
-- 上游 quota 不可见，插件显示“未知”；不进行多账号轮换或扩额。
-- Windows 实机验证、HF 登录、多模型切换、完整 Magpie 网关 / OpenCode Agent 测试尚待完成。
-
-SSH 使用内存中的临时匿名密钥，不使用个人 SSH 配置、密钥或 agent。首次连接自动保存 SHA-256 主机指纹，后续拒绝密钥变化；这属于首次信任，不代表已独立验证服务器指纹。Magpie 的主机指纹与模型缓存保存于其配置目录中的 `hf-ssh-state/`；独立服务保存于 `.local/ssh/`。临时私钥不会写入磁盘。
-
-对话、系统提示词、工具定义与工具结果都会发送给 `chat.hf.co`。Magpie 设置的 HTTP 代理仅影响目录请求；SSH 22 端口连接由插件的 JavaScript SSH 客户端直接发起。
-
-协议验证与后续工作见 [docs/PROTOCOL.md](docs/PROTOCOL.md)。本项目为非官方 MIT 社区插件。
+非官方社区插件，采用 [MIT License](LICENSE)。
