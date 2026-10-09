@@ -1,11 +1,10 @@
-import { spawn } from 'node:child_process';
-import { createInterface } from 'node:readline';
-import { fileURLToPath } from 'node:url';
+import ssh2 from 'ssh2';
 import xterm from '@xterm/headless';
+import { verifyHostKey } from './host-key.mjs';
 
 export class SshTerminal {
   constructor(options) {
-    this.options = { cols: 240, rows: 240, python: 'python3', ...options };
+    this.options = { cols: 240, rows: 240, host: 'chat.hf.co', port: 22, user: 'guest', ...options };
     this.terminal = new xterm.Terminal({
       cols: this.options.cols, rows: this.options.rows,
       scrollback: 5000, allowProposedApi: true,
@@ -13,6 +12,7 @@ export class SshTerminal {
     this.queue = Promise.resolve();
     this.lastChange = Date.now();
     this.exited = false;
+    this.closing = false;
     this.error = undefined;
     this.terminal.onData(data => this.send(data));
     // xterm does not answer background-color queries without a renderer.
@@ -24,37 +24,56 @@ export class SshTerminal {
       this.send('\x1b[?0u');
       return true;
     });
-    this.process = spawn(this.options.python,
-      ['-u', fileURLToPath(new URL('./pty_worker.py', import.meta.url))],
-      { stdio: ['pipe', 'pipe', 'pipe'] });
-    this.process.on('error', error => { this.error = error; this.exited = true; });
-    this.process.on('close', () => { this.exited = true; });
-    this.process.stdin.on('error', () => {});
-    let stderr = '';
-    this.process.stderr.on('data', data => { stderr = (stderr + data).slice(-4096); });
-    this.process.on('close', code => {
-      if (code && !this.error) this.error = new Error(`PTY worker exited (${code}): ${stderr}`);
-    });
-    this.lines = createInterface({ input: this.process.stdout });
-    this.lines.on('line', line => {
-      try {
-        const event = JSON.parse(line);
-        if (event.error) this.error = new Error(event.error);
-        if (event.data) {
-          const data = Uint8Array.from(Buffer.from(event.data, 'base64'));
+    this.connection = new ssh2.Client();
+    this.connection.on('error', error => { this.error ??= error; });
+    this.connection.on('close', () => { this.exited = true; });
+    this.connection.on('ready', () => {
+      if (this.closing) return this.connection.destroy();
+      this.connection.shell({
+        term: 'xterm-256color', cols: this.options.cols, rows: this.options.rows,
+        width: 0, height: 0,
+      }, (error, channel) => {
+        if (error) { this.error = error; this.connection.destroy(); return; }
+        if (this.closing) { channel.destroy(); return; }
+        this.channel = channel;
+        const receive = chunk => {
+          if (this.closing) return;
+          const data = Uint8Array.from(chunk);
           this.options.onRaw?.(data);
           this.queue = this.queue.then(() => new Promise(resolve => {
             this.terminal.write(data, () => { this.lastChange = Date.now(); resolve(); });
           }));
-        }
-      } catch (error) { this.error = error; }
+        };
+        channel.on('data', receive);
+        channel.stderr.on('data', receive);
+        channel.on('error', error => { this.error ??= error; });
+        channel.on('close', () => { this.exited = true; this.connection.end(); });
+      });
     });
-    this.process.stdin.write(JSON.stringify(this.options) + '\n');
+    // Keys stay in memory. Neither a system SSH client nor ssh-keygen is used.
+    // ssh2 1.17 strips leading zero bytes from Ed25519 public keys during
+    // generation, occasionally producing malformed keys. ECDSA avoids that path.
+    const keys = ssh2.utils.generateKeyPairSync('ecdsa', { bits: 256, comment: 'magpie-hf-ssh-anonymous' });
+    this.connection.connect({
+      host: this.options.host, port: this.options.port, username: this.options.user,
+      privateKey: keys.private, authHandler: ['publickey'],
+      readyTimeout: this.options.connectTimeoutMs ?? 15000,
+      keepaliveInterval: 10000, keepaliveCountMax: 2,
+      hostVerifier: (key, callback) => {
+        verifyHostKey(this.options.stateDir, this.options.host, this.options.port, key).then(
+          accepted => {
+            if (!accepted) this.error = new Error('SSH host key changed; refusing the connection');
+            callback(accepted && !this.closing);
+          },
+          error => { this.error = error; callback(false); },
+        );
+      },
+    });
   }
 
   send(text) {
-    if (!this.exited && !this.process.stdin.destroyed) {
-      this.process.stdin.write(JSON.stringify({ data: Buffer.from(text).toString('base64') }) + '\n');
+    if (!this.exited && !this.closing && this.channel?.writable) {
+      this.channel.write(text);
     }
   }
 
@@ -102,17 +121,16 @@ export class SshTerminal {
     this.send('\r');
   }
 
+  disconnect() {
+    this.closing = true;
+    this.channel?.destroy();
+    this.connection.destroy();
+    this.exited = true;
+  }
+
   async close() {
-    if (!this.exited) {
-      this.process.kill('SIGTERM');
-      await new Promise(resolve => {
-        const timer = setTimeout(resolve, 2500);
-        this.process.once('close', () => { clearTimeout(timer); resolve(); });
-      });
-    }
-    if (!this.exited) this.process.kill('SIGKILL');
+    this.disconnect();
     await this.queue;
-    this.lines.close();
     this.terminal.dispose();
   }
 }

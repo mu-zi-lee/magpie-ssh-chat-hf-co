@@ -40,10 +40,22 @@ export function prepareRequest(body, { maxPromptChars = 60000 } = {}) {
   if (!['auto', 'none', 'required'].includes(choice) &&
       !(choice?.type === 'function' && validators.has(choice.function?.name))) bad('Invalid tool_choice');
   if (choice === 'required' && !tools.length) bad('tool_choice required needs tools');
-  // These controls cannot be applied to an interactive upstream. Do not silently pretend otherwise.
-  for (const key of ['response_format', 'stop', 'logprobs', 'top_logprobs', 'functions', 'function_call', 'temperature', 'top_p', 'seed', 'presence_penalty', 'frequency_penalty', 'max_tokens', 'max_completion_tokens']) {
+  for (const key of ['response_format', 'stop', 'logprobs', 'top_logprobs', 'functions', 'function_call']) {
     if (body[key] != null) bad(`${key} is not supported by the SSH terminal transport`);
   }
+  // Gateways commonly supply these even when the user has changed no settings.
+  // Keep the default install usable, but explicitly report controls unavailable
+  // on a terminal upstream instead of claiming native sampling/token control.
+  const ignoredParameters = [];
+  for (const key of ['temperature', 'top_p', 'seed', 'presence_penalty', 'frequency_penalty']) {
+    if (body[key] == null) continue;
+    if (typeof body[key] !== 'number' || !Number.isFinite(body[key])) bad(`${key} must be a finite number`);
+    ignoredParameters.push(key);
+  }
+  for (const key of ['max_tokens', 'max_completion_tokens']) {
+    if (body[key] != null && (!Number.isInteger(body[key]) || body[key] < 1)) bad(`${key} must be a positive integer`);
+  }
+  const tokenTarget = body.max_completion_tokens ?? body.max_tokens;
   if (body.n != null && body.n !== 1) bad('Only n=1 is supported');
   const nonce = randomUUID().replaceAll('-', '');
   const start = `MAGPIE_REPLY_${nonce}_BEGIN`;
@@ -59,12 +71,13 @@ export function prepareRequest(body, { maxPromptChars = 60000 } = {}) {
     end,
     'Use an empty tool_calls array for a final answer. JSON strings must escape newlines. No invented tools.',
     'Keep your reply concise (at most 4000 characters); the terminal cannot reliably carry large outputs.',
+    ...(tokenTarget ? [`Aim for at most ${tokenTarget} output tokens in the answer content; this is a soft target. Always complete the JSON envelope and delimiters.`] : []),
     'The marker strings above are literal delimiters; replace the example JSON with your actual reply.',
     'CONVERSATION AND AVAILABLE TOOLS:',
     JSON.stringify({ messages: body.messages, tools }),
   ].join('\n');
   if (prompt.length > maxPromptChars) bad(`Serialized prompt exceeds ${maxPromptChars} characters; compact the agent history`);
-  return { body, tools, validators, choice, prompt, start, end };
+  return { body, tools, validators, choice, prompt, start, end, ignoredParameters, tokenTarget };
 }
 
 export function assistantArea(screen) {

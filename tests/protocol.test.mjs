@@ -36,9 +36,18 @@ test('enforces tool_choice and parallel_tool_calls', () => {
 
 test('unsupported modalities, controls, model access and excessive prompts fail before SSH', () => {
   assert.throws(() => prepareRequest({ ...body(), model: 'other/model' }), { status: 403, code: 'hf_login_required' });
-  assert.throws(() => prepareRequest({ ...body(), temperature: 0.2 }), { status: 400 });
+  assert.throws(() => prepareRequest({ ...body(), stop: ['end'] }), { status: 400 });
   assert.throws(() => prepareRequest({ ...body(), messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: 'https://example.com/a.png' } }] }] }), { status: 400 });
   assert.throws(() => prepareRequest(body(), { maxPromptChars: 10 }), { status: 400 });
+});
+
+test('common gateway defaults work without settings changes and are disclosed as soft or ignored', () => {
+  const request = prepareRequest({ ...body(), temperature: 0.2, max_tokens: 100 });
+  assert.deepEqual(request.ignoredParameters, ['temperature']);
+  assert.equal(request.tokenTarget, 100);
+  assert.match(request.prompt, /at most 100 output tokens/);
+  assert.throws(() => prepareRequest({ ...body(), max_tokens: -1 }), { status: 400 });
+  assert.throws(() => prepareRequest({ ...body(), temperature: 'hot' }), { status: 400 });
 });
 
 test('terminal extraction ignores echoed prompt markers and UI footer', () => {

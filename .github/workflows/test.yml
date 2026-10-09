@@ -13,5 +13,5 @@ jobs:
           node-version: '24'
       - run: bun install --frozen-lockfile --ignore-scripts
       - run: npm test
-      - run: python3 -m py_compile src/pty_worker.py
+      - run: bun test
       - run: npm pack --dry-run

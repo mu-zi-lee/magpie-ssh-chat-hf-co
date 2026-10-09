@@ -68,6 +68,10 @@ export function createBridge(options = {}, dependencies = {}) {
         try { body = JSON.parse(raw); }
         catch { throw new BridgeError('Invalid request JSON', 400, 'invalid_request_error'); }
         const prepared = prepareRequest(body, settings);
+        const controlHeaders = {
+          ...(prepared.ignoredParameters.length ? { 'x-hf-ssh-ignored-parameters': prepared.ignoredParameters.join(',') } : {}),
+          ...(prepared.tokenTarget ? { 'x-hf-ssh-soft-token-limit': String(prepared.tokenTarget) } : {}),
+        };
         const controller = new AbortController();
         const signal = AbortSignal.any([request.signal, controller.signal, AbortSignal.timeout(settings.requestTimeoutMs ?? 210000)]);
         const id = 'chatcmpl-' + randomUUID().replaceAll('-', '');
@@ -75,7 +79,7 @@ export function createBridge(options = {}, dependencies = {}) {
         const base = { id, created, model: body.model };
         if (!body.stream) {
           const message = await execute(prepared, signal);
-          return Response.json({ ...base, object: 'chat.completion', choices: [{ index: 0, message, finish_reason: message.tool_calls?.length ? 'tool_calls' : 'stop' }] });
+          return Response.json({ ...base, object: 'chat.completion', choices: [{ index: 0, message, finish_reason: message.tool_calls?.length ? 'tool_calls' : 'stop' }] }, { headers: controlHeaders });
         }
         const encoder = new TextEncoder();
         let closed = false;
@@ -100,7 +104,7 @@ export function createBridge(options = {}, dependencies = {}) {
           },
           cancel() { closed = true; controller.abort(); },
         });
-        return new Response(stream, { headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', 'x-accel-buffering': 'no' } });
+        return new Response(stream, { headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', 'x-accel-buffering': 'no', ...controlHeaders } });
       } catch (error) { return errorResponse(error); }
     },
   };

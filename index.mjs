@@ -2,11 +2,13 @@ import { resolve } from 'node:path';
 import { createBridge } from './src/bridge.mjs';
 import { MODEL } from './src/protocol.mjs';
 import { magpieModel } from './src/models.mjs';
+import { ensureAnonymousAccount } from './src/anonymous-auth.mjs';
 
 const PROVIDER = 'hf-ssh';
 const BASE = 'http://127.0.0.1/hf-ssh/v1';
 
 export const HuggingFaceSshPlugin = async (input = {}, options = {}) => {
+  await ensureAnonymousAccount(input, options);
   const bridge = createBridge({
     ...options,
     stateDir: options.stateDir ?? resolve(input.directory ?? process.cwd(), 'hf-ssh-state'),
@@ -33,8 +35,7 @@ export const HuggingFaceSshPlugin = async (input = {}, options = {}) => {
         },
       }],
       async loader(getAuth) {
-        const auth = await getAuth();
-        if (auth?.type !== 'api') return {};
+        await getAuth();
         return { baseURL: BASE, apiKey: 'anonymous', fetch: bridge.fetch };
       },
       async usage() {

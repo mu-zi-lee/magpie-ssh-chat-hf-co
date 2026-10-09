@@ -33,6 +33,17 @@ test('SSH requests are serialized even when the client sends them concurrently',
   assert.equal(peak, 1);
 });
 
+test('JSON and SSE responses disclose unsupported sampling defaults and soft token targets', async () => {
+  const bridge = createBridge({}, { complete: async () => ({ role: 'assistant', content: 'hi' }) });
+  for (const stream of [false, true]) {
+    const response = await request(bridge, { temperature: 0.7, max_tokens: 50, stream });
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('x-hf-ssh-ignored-parameters'), 'temperature');
+    assert.equal(response.headers.get('x-hf-ssh-soft-token-limit'), '50');
+    await response.text();
+  }
+});
+
 test('canceling an SSE consumer aborts its transport', async () => {
   let aborted = false;
   const bridge = createBridge({}, { complete: async (_, __, signal) => new Promise((resolve, reject) => {

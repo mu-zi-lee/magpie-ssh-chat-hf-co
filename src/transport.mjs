@@ -3,7 +3,7 @@ import { assistantArea, parseReply, BridgeError } from './protocol.mjs';
 
 export async function complete(request, options, signal) {
   const terminal = new SshTerminal(options);
-  const abort = () => terminal.process.kill('SIGTERM');
+  const abort = () => terminal.disconnect();
   signal?.addEventListener('abort', abort, { once: true });
   try {
     signal?.throwIfAborted();

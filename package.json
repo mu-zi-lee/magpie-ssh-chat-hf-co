@@ -1,11 +1,13 @@
 {
   "name": "magpie-ssh-chat-hf-co",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Experimental Magpie/OpenCode provider for Hugging Face SSH chat",
   "type": "module",
   "main": "./index.mjs",
-  "exports": { ".": "./index.mjs" },
-  "files": ["index.mjs", "src/*.mjs", "src/*.py", "scripts/*.mjs", "README.md", "docs/*.md", "LICENSE"],
+  "exports": {
+    ".": "./index.mjs"
+  },
+  "files": ["index.mjs", "src/*.mjs", "scripts/*.mjs", "README.md", "docs/*.md", "LICENSE"],
   "scripts": {
     "test": "node --test",
     "probe": "node scripts/probe.mjs",
@@ -14,9 +16,20 @@
     "serve": "node scripts/serve.mjs"
   },
   "keywords": ["magpie", "opencode", "opencode-plugin", "huggingface", "ssh"],
-  "repository": { "type": "git", "url": "https://github.com/mu-zi-lee/magpie-ssh-chat-hf-co.git" },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mu-zi-lee/magpie-ssh-chat-hf-co.git"
+  },
   "license": "MIT",
-  "engines": { "node": ">=20" },
-  "magpie": { "maxConcurrency": 1 },
-  "dependencies": { "@xterm/headless": "^5.5.0", "ajv": "^8.17.1" }
+  "engines": {
+    "node": ">=20"
+  },
+  "magpie": {
+    "maxConcurrency": 1
+  },
+  "dependencies": {
+    "@xterm/headless": "^5.5.0",
+    "ajv": "^8.17.1",
+    "ssh2": "1.17.0"
+  }
 }
