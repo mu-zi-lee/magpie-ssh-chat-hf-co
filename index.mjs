@@ -1,4 +1,5 @@
 import { resolve } from 'node:path';
+import { readFileSync } from 'node:fs';
 import { createBridge } from './src/bridge.mjs';
 import { MODEL } from './src/protocol.mjs';
 import { magpieModel } from './src/models.mjs';
@@ -6,6 +7,7 @@ import { ensureAnonymousAccount } from './src/anonymous-auth.mjs';
 
 const PROVIDER = 'hf-ssh';
 const BASE = 'http://127.0.0.1/hf-ssh/v1';
+const ICON = `data:image/webp;base64,${readFileSync(new URL('./assets/icon.webp', import.meta.url)).toString('base64')}`;
 
 export const HuggingFaceSshPlugin = async (input = {}, options = {}) => {
   await ensureAnonymousAccount(input, options);
@@ -25,6 +27,7 @@ export const HuggingFaceSshPlugin = async (input = {}, options = {}) => {
     },
     auth: {
       provider: PROVIDER,
+      icon: ICON,
       maxConcurrency: 1,
       methods: [{
         type: 'api',
