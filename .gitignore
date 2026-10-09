@@ -1,0 +1,6 @@
+node_modules/
+.DS_Store
+.local/
+hf-ssh-state/
+__pycache__/
+*.pyc
