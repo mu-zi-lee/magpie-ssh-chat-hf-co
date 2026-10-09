@@ -1,10 +1,13 @@
 import ssh2 from 'ssh2';
 import xterm from '@xterm/headless';
 import { verifyHostKey } from './host-key.mjs';
+import { MAX_REPLY_CHARS } from './protocol.mjs';
 
 export class SshTerminal {
   constructor(options) {
-    this.options = { cols: 240, rows: 240, host: 'chat.hf.co', port: 22, user: 'guest', ...options };
+    // HF's renderer wraps words itself, losing whitespace boundaries. A wide
+    // virtual PTY fits even double-width Unicode in a bounded JSON reply.
+    this.options = { cols: MAX_REPLY_CHARS * 2 + 192, rows: 64, host: 'chat.hf.co', port: 22, user: 'guest', ...options };
     this.terminal = new xterm.Terminal({
       cols: this.options.cols, rows: this.options.rows,
       scrollback: 5000, allowProposedApi: true,
@@ -82,7 +85,17 @@ export class SshTerminal {
     const buffer = this.terminal.buffer.active;
     const lines = [];
     for (let i = 0; i < buffer.length; i++) {
-      lines.push((buffer.getLine(i)?.translateToString(true) ?? '').trimEnd());
+      const line = buffer.getLine(i);
+      const next = buffer.getLine(i + 1);
+      // A terminal wrap is not a newline in the model's JSON. Keep spaces
+      // at wrap boundaries: trimming them can silently change file contents.
+      // A wide character at the final column leaves an empty padding cell;
+      // that cell is not an actual space in the JSON string.
+      const padded = next?.isWrapped && next.getCell(0)?.getWidth() === 2 && line?.getCell(line.length - 1)?.getCode() === 0;
+      let text = line?.translateToString(!next?.isWrapped, 0, padded ? line.length - 1 : undefined) ?? '';
+      if (!next?.isWrapped) text = text.trimEnd();
+      if (line?.isWrapped && lines.length) lines[lines.length - 1] += text;
+      else lines.push(text);
     }
     return lines.join('\n');
   }

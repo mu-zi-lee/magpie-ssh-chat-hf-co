@@ -77,6 +77,68 @@ test('catalog returns all models with explicit access and handles refresh failur
   assert.equal((await response.json()).data.length, 2);
 });
 
+test('queue overload returns HTTP 503 for JSON and SSE; canceled waiters never run', async () => {
+  let release, started;
+  const entered = new Promise(resolve => { started = resolve; });
+  const running = new Promise(resolve => { release = resolve; });
+  let calls = 0;
+  const bridge = createBridge({ maxQueuedRequests: 2 }, { complete: async () => {
+    calls++;
+    if (calls === 1) { started(); await running; }
+    return { role: 'assistant', content: 'ok' };
+  } });
+  const first = request(bridge);
+  await entered;
+  const controller = new AbortController();
+  const second = bridge.fetch('http://localhost/v1/chat/completions', { method: 'POST', signal: controller.signal,
+    body: JSON.stringify({ model: MODEL, messages: [{ role: 'user', content: 'queued' }], stream: true }) });
+  const queuedResponse = await second;
+  for (const stream of [false, true]) {
+    const response = await request(bridge, { stream });
+    assert.equal(response.status, 503);
+    assert.equal(response.headers.get('retry-after'), '2');
+    assert.equal((await response.json()).error.code, 'ssh_queue_full');
+  }
+  controller.abort();
+  await queuedResponse.text();
+  const third = request(bridge);
+  release();
+  assert.equal((await first).status, 200);
+  assert.equal((await third).status, 200);
+  assert.equal(calls, 2);
+});
+
+test('offline catalog uses a retry cooldown while preserving access and billing labels', async () => {
+  let calls = 0;
+  const catalog = new ModelCatalog({ fetcher: async () => { calls++; throw new Error('offline'); } });
+  const results = await Promise.all([catalog.list(), catalog.list(), catalog.list()]);
+  assert.equal(calls, 1);
+  assert.equal((await catalog.list()).stale, true);
+  assert.equal(calls, 1);
+  assert.equal(results[0].data[0].ssh_billing, 'anonymous_no_account');
+  const models = normalizeCatalog([{ id: MODEL }, { id: 'other/model', providers: [{ is_free: true }] }]);
+  assert.equal(models[1].ssh_available, false);
+  assert.equal(models[1].ssh_billing, 'unverified');
+  await catalog.list({ refresh: true });
+  assert.equal(calls, 2);
+});
+
+test('timed-out work releases the queue and JSON/SSE report the same abort code', async () => {
+  const bridge = createBridge({ requestTimeoutMs: 50, maxQueuedRequests: 1 }, { complete: async (_, __, signal) => new Promise((resolve, reject) => {
+    signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+  }) });
+  // Node's AbortSignal.timeout timer is unref'ed; hold the event loop for this test.
+  const keepAlive = setInterval(() => {}, 1000);
+  try {
+    const response = await request(bridge);
+    assert.equal(response.status, 504);
+    assert.equal((await response.json()).error.code, 'request_aborted');
+    const sse = await (await request(bridge, { stream: true })).text();
+    assert.match(sse, /"code":"request_aborted"/);
+    assert.ok(sse.endsWith('data: [DONE]\n\n'));
+  } finally { clearInterval(keepAlive); }
+});
+
 test('plugin has one function export, preserves user configuration and needs no upstream API key', async () => {
   const exported = await import('../index.mjs');
   assert.equal(Object.values(exported).filter(item => typeof item === 'function').length, 1);

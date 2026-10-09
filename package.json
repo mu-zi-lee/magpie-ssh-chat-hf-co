@@ -1,6 +1,6 @@
 {
   "name": "magpie-ssh-chat-hf-co",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Experimental Magpie/OpenCode provider for Hugging Face SSH chat",
   "type": "module",
   "main": "./index.mjs",
@@ -13,6 +13,7 @@
     "probe": "node scripts/probe.mjs",
     "smoke": "node scripts/smoke.mjs",
     "smoke:http": "node scripts/smoke-http.mjs",
+    "smoke:agent": "node scripts/smoke-agent.mjs",
     "serve": "node scripts/serve.mjs"
   },
   "keywords": ["magpie", "opencode", "opencode-plugin", "huggingface", "ssh"],
@@ -32,5 +33,9 @@
     "@xterm/headless": "^5.5.0",
     "ajv": "^8.17.1",
     "ssh2": "1.17.0"
+  },
+  "devDependencies": {
+    "@ai-sdk/openai-compatible": "^3.0.67",
+    "ai": "^7.0.137"
   }
 }

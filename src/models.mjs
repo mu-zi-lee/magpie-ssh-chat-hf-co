@@ -15,24 +15,27 @@ export function normalizeCatalog(data) {
       ssh_available: model.id === MODEL,
       ssh_access: model.id === MODEL ? 'anonymous' : 'hf_login_required_unverified',
       ssh_tool_calling: model.id === MODEL ? 'experimental_json' : 'unverified',
+      ssh_billing: model.id === MODEL ? 'anonymous_no_account' : 'unverified',
     });
   }
   if (!unique.size) throw new BridgeError('Invalid Hugging Face model catalog');
-  if (!unique.has(MODEL)) unique.set(MODEL, { ...fallback, ssh_available: true, ssh_access: 'anonymous', ssh_tool_calling: 'experimental_json' });
+  if (!unique.has(MODEL)) unique.set(MODEL, { ...fallback, ssh_available: true, ssh_access: 'anonymous', ssh_tool_calling: 'experimental_json', ssh_billing: 'anonymous_no_account' });
   return [...unique.values()];
 }
 
 export class ModelCatalog {
-  constructor({ stateDir, fetcher = fetch, ttlMs = 15 * 60 * 1000 } = {}) {
+  constructor({ stateDir, fetcher = fetch, ttlMs = 15 * 60 * 1000, catalogRetryMs = 30000 } = {}) {
     this.stateDir = stateDir;
     this.fetcher = fetcher;
     this.ttlMs = ttlMs;
     this.cached = undefined;
     this.pending = undefined;
+    this.catalogRetryMs = catalogRetryMs;
+    this.retryAt = 0;
   }
 
   async list({ refresh = false } = {}) {
-    if (!refresh && this.cached && Date.now() - this.cached.at < this.ttlMs) return this.cached;
+    if (!refresh && this.cached && (Date.now() < this.retryAt || (!this.cached.stale && Date.now() - this.cached.at < this.ttlMs))) return this.cached;
     if (this.pending) return this.pending;
     this.pending = this.load().finally(() => { this.pending = undefined; });
     return this.pending;
@@ -45,6 +48,7 @@ export class ModelCatalog {
       const body = await response.json();
       const result = { at: Date.now(), source: CATALOG_URL, stale: false, data: normalizeCatalog(body.data) };
       this.cached = result;
+      this.retryAt = 0;
       if (this.stateDir) {
         // Cache failure does not turn a valid upstream catalog into a failed discovery.
         try {
@@ -61,7 +65,9 @@ export class ModelCatalog {
           previous = { ...disk, data: normalizeCatalog(disk.data) };
         } catch { /* First run may not have a cache. */ }
       }
-      return { ...(previous ?? { at: 0, source: 'verified-default', data: normalizeCatalog([fallback]) }), stale: true, error: `Catalog refresh failed: ${error.message}` };
+      this.cached = { ...(previous ?? { at: 0, source: 'verified-default', data: normalizeCatalog([fallback]) }), stale: true, error: `Catalog refresh failed: ${error.message}` };
+      this.retryAt = Date.now() + this.catalogRetryMs;
+      return this.cached;
     }
   }
 }
@@ -69,7 +75,9 @@ export class ModelCatalog {
 export function magpieModel(model) {
   return {
     name: `${model.id}${model.ssh_available ? ' (SSH · experimental tools)' : ' (HF login required)'}`,
-    limit: { context: 16000, output: 1000 },
+    // The SSH textarea, rather than the model's API context, is the bottleneck.
+    // Encourage early Agent compaction; the exact character guard is in protocol.
+    limit: { context: 2000, output: 1000 },
     tool_call: model.ssh_available,
     modalities: { input: ['text'], output: ['text'] },
     disabled: !model.ssh_available,

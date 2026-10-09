@@ -8,18 +8,24 @@ export function errorResponse(error) {
   const aborted = error?.name === 'AbortError' || error?.name === 'TimeoutError';
   return Response.json({ error: {
     message: error.message ?? 'Unknown SSH bridge error',
-    type: error.status === 400 ? 'invalid_request_error' : 'server_error',
-    code: error.code ?? (aborted ? 'request_aborted' : 'ssh_bridge_error'),
-  } }, { status: error.status ?? (aborted ? 504 : 502) });
+    type: error.status >= 400 && error.status < 500 ? 'invalid_request_error' : 'server_error',
+    code: typeof error.code === 'string' ? error.code : (aborted ? 'request_aborted' : 'ssh_bridge_error'),
+  } }, { status: error.status ?? (aborted ? 504 : 502), ...(error.code === 'ssh_queue_full' ? { headers: { 'retry-after': '2' } } : {}) });
 }
 
 class SerialQueue {
-  constructor() { this.tail = Promise.resolve(); }
-  async run(action, signal) {
+  constructor(limit) { this.tail = Promise.resolve(); this.size = 0; this.limit = limit; }
+  run(action, signal) {
+    signal?.throwIfAborted();
+    if (this.size >= this.limit) throw new BridgeError('SSH request queue is full; retry after the current requests finish', 503, 'ssh_queue_full');
+    this.size++;
     const previous = this.tail;
     let release;
     const current = new Promise(resolve => { release = resolve; });
     this.tail = previous.then(() => current);
+    return this.wait(action, signal, previous, release);
+  }
+  async wait(action, signal, previous, release) {
     let abort;
     try {
       signal?.throwIfAborted();
@@ -32,6 +38,7 @@ class SerialQueue {
       return await action();
     } finally {
       signal?.removeEventListener('abort', abort);
+      this.size--;
       release();
     }
   }
@@ -41,9 +48,11 @@ export function createBridge(options = {}, dependencies = {}) {
   const settings = { stateDir: resolve('.local/ssh'), ...options };
   const catalog = dependencies.catalog ?? new ModelCatalog(settings);
   const transport = dependencies.complete ?? complete;
-  const queue = new SerialQueue();
+  const maxQueuedRequests = settings.maxQueuedRequests ?? 8;
+  if (!Number.isInteger(maxQueuedRequests) || maxQueuedRequests < 1) throw new Error('maxQueuedRequests must be a positive integer');
+  const queue = new SerialQueue(maxQueuedRequests);
 
-  async function execute(request, signal) {
+  function execute(request, signal) {
     return queue.run(() => transport(request, settings, signal), signal);
   }
 
@@ -74,11 +83,15 @@ export function createBridge(options = {}, dependencies = {}) {
         };
         const controller = new AbortController();
         const signal = AbortSignal.any([request.signal, controller.signal, AbortSignal.timeout(settings.requestTimeoutMs ?? 210000)]);
+        // Reserve the queue slot before opening SSE so overload gets a real HTTP 503.
+        const work = execute(prepared, signal);
+        // The stream consumes this promise asynchronously; observe rejection now.
+        work.catch(() => {});
         const id = 'chatcmpl-' + randomUUID().replaceAll('-', '');
         const created = Math.floor(Date.now() / 1000);
         const base = { id, created, model: body.model };
         if (!body.stream) {
-          const message = await execute(prepared, signal);
+          const message = await work;
           return Response.json({ ...base, object: 'chat.completion', choices: [{ index: 0, message, finish_reason: message.tool_calls?.length ? 'tool_calls' : 'stop' }] }, { headers: controlHeaders });
         }
         const encoder = new TextEncoder();
@@ -90,13 +103,13 @@ export function createBridge(options = {}, dependencies = {}) {
             const heartbeat = setInterval(() => send(': waiting for SSH model\n\n'), 2000);
             try {
               event({ role: 'assistant' });
-              const message = await execute(prepared, signal);
+              const message = await work;
               // Buffer until validation; incomplete JSON must never reach a tool executor.
               if (message.content) event({ content: message.content });
               if (message.tool_calls) event({ tool_calls: message.tool_calls.map((call, index) => ({ index, ...call })) });
               send(`data: ${JSON.stringify({ ...base, object: 'chat.completion.chunk', choices: [{ index: 0, delta: {}, finish_reason: message.tool_calls?.length ? 'tool_calls' : 'stop' }] })}\n\n`);
             } catch (error) {
-              send(`data: ${JSON.stringify({ error: { message: error.message, type: 'server_error', code: error.code ?? 'ssh_bridge_error' } })}\n\n`);
+              send(`data: ${JSON.stringify(await errorResponse(error).json())}\n\n`);
             } finally {
               clearInterval(heartbeat);
               if (!closed) { send('data: [DONE]\n\n'); closed = true; streamController.close(); }

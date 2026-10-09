@@ -5,6 +5,20 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SshTerminal } from '../src/terminal.mjs';
+import xterm from '@xterm/headless';
+import { MODEL, prepareRequest, parseReply, assistantArea } from '../src/protocol.mjs';
+
+test('wrapped terminal JSON preserves Unicode, spaces and escaped file newlines', async () => {
+  const request = prepareRequest({ model: MODEL, messages: [{ role: 'user', content: 'hello' }] });
+  const content = 'hello  世界    '.repeat(25) + '\nnext line\t"quoted"\\path';
+  const json = JSON.stringify({ content, tool_calls: [] });
+  const terminal = new xterm.Terminal({ cols: 32, rows: 40, allowProposedApi: true });
+  try {
+    await new Promise(resolve => terminal.write(`🤗 ${MODEL}\r\n${request.start}\r\n${json}\r\n${request.end}\r\n┃ Ask anything`, resolve));
+    const screen = await SshTerminal.prototype.screen.call({ queue: Promise.resolve(), terminal });
+    assert.equal(parseReply(assistantArea(screen), request).content, content);
+  } finally { terminal.dispose(); }
+});
 
 test('JavaScript SSH allocates the remote PTY, responds to terminal queries and cancels cleanly', { timeout: 10000 }, async () => {
   const stateDir = await mkdtemp(join(tmpdir(), 'hf-ssh-terminal-'));
@@ -39,8 +53,8 @@ test('JavaScript SSH allocates the remote PTY, responds to terminal queries and 
   try {
     assert.match(await terminal.ready(), /Ask anything/);
     assert.equal(ptyInfo.term, 'xterm-256color');
-    assert.equal(ptyInfo.cols, 240);
-    assert.equal(ptyInfo.rows, 240);
+    assert.ok(ptyInfo.cols >= 8000);
+    assert.equal(ptyInfo.rows, 64);
     assert.ok(responses.join('').includes('\x1b]11;rgb:ffff/ffff/ffff\x07'));
     terminal.disconnect();
     assert.equal(terminal.exited, true);
