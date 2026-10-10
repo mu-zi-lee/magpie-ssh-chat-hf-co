@@ -2,6 +2,18 @@
 
 验证日期：2026-10-09；初版探测使用 macOS 系统 OpenSSH；0.2.0 已替换为 JavaScript SSH，并在 Bun 1.4、清空 PATH 的环境中验证。
 
+## 0.5.0：Cloudflare 临时远程登录
+
+远程入口参考同作者 `magpie-our-free-model` 的 Quick Tunnel 实现，复用并适配其固定版本下载器和进程监督器。SSH/headless Linux 环境自动选择远程入口，Magpie 同时提供显式 Cloudflare 和本机登录方式；独立登录命令支持 `--cloudflare` 和 `--local`。
+
+临时登录服务仍绑定 `127.0.0.1` 的随机端口。cloudflared 只转发该监听服务；页面只接受本次随机路径、精确 Host 和同源 Origin，不提供模型 API 或凭证接口。公开页面只含公钥和指纹，浏览器不接触私钥。隧道不改变到 HF 的 SSH 连接路径，也不能修复服务器无法访问 `chat.hf.co:22` 的问题。
+
+优先检查已有客户端；缺少时下载官方 cloudflared 2026.10.0，校验固定大小及 SHA-256，macOS 额外校验解压后的可执行文件。支持 Linux/macOS x64、arm64 及 Windows x64，二进制不随包分发。保留原 Apache-2.0 许可及来源说明。客户端下载使用临时目录和原子发布，校验失败不会执行；有效缓存可以离线复用。
+
+每次通道使用独立空配置，并移除 `TUNNEL_*` / `CLOUDFLARED_*` 环境变量，避免已有具名隧道设置改变目标。使用 HTTP/2、IPv4 和回环 metrics 端口，不安装系统服务。启动有独立 45 秒超时，完整登录默认十分钟；结束登录时停止进程并删除临时配置，运行缓存保留以供下次登录。监督器在宿主进程被强制终止或 stdin 关闭后也会停止 cloudflared。
+
+2026-10-10 验证：Node/Bun 离线回归覆盖下载完整性、缓存污染、官方重定向限制、macOS 归档、Host/Origin 和路径限制、启动失败、下载取消、登录取消、超时及宿主强制退出后的进程清理。真实下载并启动官方 macOS arm64 客户端，建立 Quick Tunnel；外部 HTTPS 公钥页返回 200，公钥逐字匹配且不含私钥，模型 API 路径返回 404，结束后进程和临时配置关闭清理。本机系统 DNS 首次持续返回 ENOTFOUND，后续通过 Cloudflare 公共 DNS 解析及保留主机名 TLS 校验的 HTTPS 请求完成验证，因此不能将隧道已连接视为每个浏览器的 DNS 已生效。该验证未代替用户在 HF 添加公钥后的完整登录。
+
 ## 0.4.0：公钥链接认证与额度错误
 
 2026-10-09 后续复测中，真实 HTTP SSE、AI SDK Agent 和官方 Magpie 插件宿主均未能完成对话，旧实现返回 `ssh_response_timeout`。直接检查 SSH 终端发现，上游已显示 `Your SSH key is not linked to a Hugging Face account, log in below to chat with it.`、设备授权地址及 `waiting for you to approve`，不再显示此前的匿名聊天欢迎页。
@@ -13,6 +25,8 @@
 Magpie 提供浏览器链接认证方法，验证后由宿主保存私钥；独立服务使用 `scripts/login.mjs`，将凭证原子写入 `.local/ssh/auth.json`，文件权限为 `0600`。每次请求读取当前账号凭证；私钥不作为 HTTP API Key 返回。旧版自动注册的 `anonymous` 配置需要重新登录。
 
 登录链接先打开临时本地页面，提供「复制公钥」按钮及可全选的只读文本框，再链接到 HF 官方 SSH Keys 页面。页面仅绑定 `127.0.0.1` 的随机端口和随机路径，只包含公钥及指纹；认证成功、失败、取消或超时后关闭。浏览器剪贴板不可用时尝试兼容复制，再退回全选手动复制。远程运行保留登录说明中的完整公钥及 HF 链接。
+
+2026-10-10 排查添加公钥后登录失败的问题：现场已有凭证能识别账号，未关联密钥进入登录等待，尚未复现用户的具体失败。代码确认此前自动验证仅重试 `hf_login_required`，一次临时断连、握手超时或第二次验证连接失败就会提前结束登录。现将暂时网络错误及 SSH 认证尚未通过纳入轮询，保留本次登录密钥；最终超时附带最近检测原因。主机指纹变化及本地文件权限错误仍立即失败。离线回归覆盖关联前、第二次验证中的断连及超时，确认成功仍需要两次全新连接识别同一账号。
 
 登录后的真实聊天返回 `402 Payment Required`，提示账号没有剩余 Inference Providers credits。插件已从助手回复区域识别上游错误，非流式请求返回 HTTP 402 和 `hf_insufficient_credits`，SSE 返回同名错误事件及 `[DONE]`；错误前不会输出助手回复。已验证两种路径不再等待到 `ssh_response_timeout`，官方 Magpie Bun 宿主也验证了凭证加载及该错误的传递。登录后成功回复及完整工具循环仍受账号额度阻塞，尚未验证。
 

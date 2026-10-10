@@ -7,7 +7,12 @@ const cancel = () => controller.abort(new DOMException('Login canceled', 'AbortE
 process.once('SIGINT', cancel);
 process.once('SIGTERM', cancel);
 try {
-  const login = await authorizeSsh({ stateDir, signal: controller.signal });
+  const access = process.argv.slice(2);
+  if (access.some(arg => !['--cloudflare', '--local'].includes(arg)) || access.length > 1) {
+    throw new Error('用法：login.mjs [--cloudflare | --local]');
+  }
+  const loginAccess = access.includes('--cloudflare') ? 'cloudflare' : access.includes('--local') ? 'local' : 'auto';
+  const login = await authorizeSsh({ stateDir, signal: controller.signal, loginAccess });
   console.log(`登录链接：${login.url}\n${login.instructions}`);
   const result = await login.callback();
   if (result.type !== 'success') throw new Error(result.error);

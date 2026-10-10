@@ -1,5 +1,6 @@
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
+import { createCloudflareTunnel, remoteLoginByDefault } from './cloudflare-tunnel.mjs';
 
 export const HF_SSH_KEYS_URL = 'https://huggingface.co/settings/keys/add?type=ssh';
 
@@ -7,7 +8,8 @@ const escape = text => text.replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&
 
 // The host renders OAuth instructions as plain text. Use the system browser
 // for a selectable key and clipboard access, without requiring host UI changes.
-export async function createAuthPage(publicKey, fingerprint) {
+export async function createAuthPage(publicKey, fingerprint, options = {}, { createTunnel = createCloudflareTunnel } = {}) {
+  const remote = remoteLoginByDefault(options);
   const path = '/ssh-key/' + randomUUID();
   const nonce = randomUUID();
   const html = `<!doctype html>
@@ -42,7 +44,7 @@ export async function createAuthPage(publicKey, fingerprint) {
     <a class="link" href="${HF_SSH_KEYS_URL}" target="_blank" rel="noopener noreferrer">打开 HF 添加页面 ↗</a>
   </div>
   <p id="status" role="status" aria-live="polite"></p>
-  <p>保存后返回 Magpie 或登录终端，插件会自动验证并完成登录。此页面仅在本次登录期间有效。</p>
+  <p>保存后返回 Magpie 或登录终端，插件会自动验证并完成登录。此页面仅在本次登录期间有效${remote ? '，临时远程通道会随登录结束自动关闭' : ''}。</p>
   <p class="detail">指纹：${escape(fingerprint)}</p>
   <p class="detail">这里只显示公钥，私钥保留在运行插件的机器上。浏览器不能复制时，点击公钥框全选后按 Ctrl+C / ⌘C。</p>
 </main>
@@ -63,8 +65,13 @@ export async function createAuthPage(publicKey, fingerprint) {
   });
 </script>
 </html>`;
+  let url, publicOrigin, tunnel, closing;
   const server = createServer((request, response) => {
-    if (request.method !== 'GET' || request.url !== path || request.headers.host !== new URL(url).host) {
+    const allowedHost = request.headers.host === new URL(localUrl).host ||
+      publicOrigin && request.headers.host === new URL(publicOrigin).host;
+    const expectedOrigin = request.headers.host === new URL(localUrl).host ? new URL(localUrl).origin : publicOrigin;
+    const allowedOrigin = !request.headers.origin || request.headers.origin === expectedOrigin;
+    if (request.method !== 'GET' || request.url !== path || !allowedHost || !allowedOrigin) {
       response.writeHead(404); response.end(); return;
     }
     response.writeHead(200, {
@@ -76,11 +83,28 @@ export async function createAuthPage(publicKey, fingerprint) {
     });
     response.end(html);
   });
-  let url;
   await new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(0, '127.0.0.1', () => { server.removeListener('error', reject); resolve(); });
   });
-  url = `http://127.0.0.1:${server.address().port}${path}`;
-  return { url, close: () => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }) };
+  const localUrl = `http://127.0.0.1:${server.address().port}${path}`;
+  const close = () => closing ??= (async () => {
+    try { await tunnel?.close(); }
+    finally { await new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }); }
+  })();
+  try {
+    options.signal?.throwIfAborted();
+    if (remote) {
+      tunnel = await createTunnel(new URL(localUrl).origin, options);
+      const origin = new URL(tunnel.origin);
+      if (origin.protocol !== 'https:' || !/^[a-z0-9]+(?:-[a-z0-9]+)*\.trycloudflare\.com$/.test(origin.hostname) ||
+          origin.port || origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash) {
+        throw new Error('无效 Cloudflare 临时登录地址');
+      }
+      publicOrigin = origin.origin;
+      url = publicOrigin + path;
+    } else url = localUrl;
+    options.signal?.throwIfAborted();
+    return { url, remote, close };
+  } catch (error) { await close(); throw error; }
 }

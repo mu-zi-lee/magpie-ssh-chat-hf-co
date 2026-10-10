@@ -4,12 +4,13 @@ import ssh2 from 'ssh2';
 import { mkdtemp, readFile, readdir, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { authorizeSsh, privateKeyFromAuth, readLocalAuth, saveLocalAuth, signedInAccount } from '../src/auth.mjs';
+import { authorizeSsh as authorizeSshReal, privateKeyFromAuth, readLocalAuth, saveLocalAuth, signedInAccount } from '../src/auth.mjs';
 import { BridgeError, MODEL } from '../src/protocol.mjs';
 import { createBridge } from '../src/bridge.mjs';
 
 const accountScreen = `🤗 ssh chat ${MODEL} @test-user\n┃ Ask anything`;
 const loginGate = () => new BridgeError('Key is not linked', 403, 'hf_login_required');
+const authorizeSsh = (options = {}, dependencies) => authorizeSshReal({ loginAccess: 'local', ...options }, dependencies);
 
 test('anonymous or echoed usernames do not confirm SSH login', () => {
   assert.equal(signedInAccount(`🤗 ssh chat ${MODEL} @anonymous\n┃ Ask anything`), undefined);
@@ -68,6 +69,91 @@ test('a login that fails on verification never returns a credential', async () =
   assert.equal(result.type, 'failed');
   assert.equal(result.key, undefined);
   assert.equal(closed, 2);
+});
+
+test('temporary failures before linking and during verification retry with the original key', async () => {
+  for (const failure of [
+    Object.assign(new Error('socket reset'), { code: 'ECONNRESET' }),
+    new Error('Timed out while waiting for handshake'),
+    new Error('Connection lost before handshake'),
+    new Error('SSH session closed: upstream restarting'),
+    Object.assign(new Error('All configured authentication methods failed'), { level: 'client-authentication' }),
+  ]) {
+    let connected = 0, closed = 0, polls = 0;
+    const keys = [];
+    class Terminal {
+      constructor(options) { keys.push(options.privateKey); this.number = ++connected; }
+      async ready() { if ([1, 4].includes(this.number)) throw failure; if (this.number === 2) throw loginGate(); return accountScreen; }
+      async close() { closed++; }
+    }
+    const login = await authorizeSsh({}, { Terminal, pollDelay: async () => { polls++; } });
+    const result = await login.callback();
+    assert.equal(result.type, 'success');
+    assert.equal(connected, 6);
+    assert.equal(closed, connected);
+    assert.equal(polls, 3);
+    assert.ok(keys.every(key => key === result.key));
+    await assert.rejects(fetch(login.url));
+  }
+});
+
+test('host identity and local configuration errors fail immediately without retrying', async () => {
+  for (const error of [
+    new Error('SSH host key changed; refusing the connection'),
+    Object.assign(new Error('Permission denied opening host key cache'), { code: 'EACCES' }),
+  ]) {
+    let closed = 0;
+    class Terminal {
+      async ready() { throw error; }
+      async close() { closed++; }
+    }
+    const login = await authorizeSsh({}, { Terminal, pollDelay: () => assert.fail('Permanent failures must not retry') });
+    const result = await login.callback();
+    assert.equal(result.type, 'failed');
+    assert.equal(result.error, error.message);
+    assert.equal(closed, 1);
+  }
+});
+
+test('persistent connection problems report the last network failure when login expires', async () => {
+  class Terminal {
+    async ready() { throw Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }); }
+    async close() {}
+  }
+  const login = await authorizeSsh({ loginTimeoutMs: 30, loginPollMs: 5 }, { Terminal });
+  const result = await login.callback();
+  assert.equal(result.type, 'failed');
+  assert.match(result.error, /timed out.*chat\.hf\.co:22.*ECONNREFUSED/);
+  assert.equal(result.key, undefined);
+});
+
+test('remote login passes cancellation to the tunnel and closes the page after success or timeout', async () => {
+  for (const linked of [true, false]) {
+    let closed = 0, pageSignal;
+    class Terminal {
+      async ready() { if (!linked) throw loginGate(); return accountScreen; }
+      async close() {}
+    }
+    const login = await authorizeSsh({ loginAccess: 'cloudflare', loginTimeoutMs: 30, loginPollMs: 5 }, {
+      Terminal,
+      createPage: async (publicKey, fingerprint, options) => {
+        assert.equal(options.loginAccess, 'cloudflare');
+        assert.ok(publicKey.includes('ecdsa-sha2-nistp256'));
+        assert.ok(!publicKey.includes('PRIVATE KEY'));
+        pageSignal = options.signal;
+        return { remote: true, url: 'https://hf-fixture.trycloudflare.com/ssh-key/fixture', close: async () => { closed++; } };
+      },
+    });
+    assert.match(login.instructions, /你的电脑浏览器/);
+    // A mocked page has no open socket to keep AbortSignal.timeout alive.
+    const keepAlive = setInterval(() => {}, 1000);
+    try {
+      const result = await login.callback();
+      assert.equal(result.type, linked ? 'success' : 'failed');
+      assert.equal(closed, 1);
+      if (!linked) assert.equal(pageSignal.aborted, true);
+    } finally { clearInterval(keepAlive); }
+  }
 });
 
 test('canceling an unfinished login disconnects SSH and leaves no successful result', async () => {

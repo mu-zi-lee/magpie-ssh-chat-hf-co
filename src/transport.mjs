@@ -1,8 +1,7 @@
 import { SshTerminal } from './terminal.mjs';
 import { assistantArea, parseReply, upstreamError, BridgeError } from './protocol.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
-
-const transient = error => ['ECONNRESET', 'ECONNREFUSED', 'EPIPE', 'ENETUNREACH', 'EHOSTUNREACH', 'ETIMEDOUT', 'EAI_AGAIN'].includes(error.code) || /^(Timed out|SSH session closed)|handshake.*timeout/i.test(error.message);
+import { isTransientSshError } from './ssh-errors.mjs';
 
 export async function complete(request, options, signal, { Terminal = SshTerminal } = {}) {
   const retries = options.connectRetries ?? 1;
@@ -33,7 +32,7 @@ export async function complete(request, options, signal, { Terminal = SshTermina
     } catch (error) {
       signal?.throwIfAborted();
       if (error instanceof BridgeError) throw error;
-      retry = !dispatched && attempt < retries && transient(error);
+      retry = !dispatched && attempt < retries && isTransientSshError(error);
       if (!retry) {
         const timedOut = /timed? out|timeout/i.test(error.message);
         const code = timedOut ? (dispatched ? 'ssh_response_timeout' : 'ssh_connect_timeout') : (dispatched ? 'ssh_session_lost' : 'ssh_connection_failed');

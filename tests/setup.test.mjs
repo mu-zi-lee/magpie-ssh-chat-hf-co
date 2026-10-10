@@ -31,7 +31,9 @@ test('installing the plugin offers browser login without creating or overwriting
     client: { auth: { set: () => assert.fail('Installation must not mark an account as authenticated') } },
   });
   assert.equal(plugin.auth.methods[0].type, 'oauth');
-  assert.equal(plugin.auth.methods.length, 1);
+  assert.equal(plugin.auth.methods.length, 3);
+  assert.match(plugin.auth.methods[1].label, /Cloudflare/);
+  assert.match(plugin.auth.methods[2].label, /本机/);
   const loader = await plugin.auth.loader(async () => ({ type: 'api', key: 'anonymous' }));
   assert.equal(loader.apiKey, 'hf-ssh');
   const response = await loader.fetch('http://localhost/v1/chat/completions', {

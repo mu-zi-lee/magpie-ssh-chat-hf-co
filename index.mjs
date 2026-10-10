@@ -33,6 +33,14 @@ export const HuggingFaceSshPlugin = async (input = {}, options = {}) => {
         type: 'oauth',
         label: 'Hugging Face 浏览器登录（链接认证）',
         authorize: () => authorizeSsh(settings),
+      }, {
+        type: 'oauth',
+        label: 'Hugging Face 远程登录（Cloudflare 临时通道）',
+        authorize: () => authorizeSsh({ ...settings, loginAccess: 'cloudflare' }),
+      }, {
+        type: 'oauth',
+        label: 'Hugging Face 本机登录（本地页面）',
+        authorize: () => authorizeSsh({ ...settings, loginAccess: 'local' }),
       }],
       async loader(getAuth) {
         const accountBridge = createBridge({ ...settings, getPrivateKey: async () => privateKeyFromAuth(await getAuth()) });

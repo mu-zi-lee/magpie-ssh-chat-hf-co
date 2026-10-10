@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { SshTerminal } from './terminal.mjs';
 import { BridgeError } from './protocol.mjs';
 import { createAuthPage, HF_SSH_KEYS_URL } from './auth-page.mjs';
+import { isTransientSshError } from './ssh-errors.mjs';
 
 export function signedInAccount(screen) {
   const match = screen.match(/^\s*🤗\s+ssh chat\s+[^\n]+?\s+@([a-z0-9][a-z0-9_.-]*)\s*$/im);
@@ -24,12 +25,12 @@ export function privateKeyFromAuth(auth) {
 // Native SSH /login authorizes its current session, but our live check showed
 // that it did not link the key for a new connection. HF's SSH key settings page
 // links the public key permanently; only the user submits it in the browser.
-export async function authorizeSsh(options = {}, { Terminal = SshTerminal, pollDelay = delay } = {}) {
+export async function authorizeSsh(options = {}, { Terminal = SshTerminal, pollDelay = delay, createPage = createAuthPage } = {}) {
   const keys = ssh2.utils.generateKeyPairSync('ecdsa', { bits: 256, comment: 'magpie-hf-ssh' });
   const fingerprint = 'SHA256:' + createHash('sha256').update(ssh2.utils.parseKey(keys.private).getPublicSSH()).digest('base64').replace(/=+$/, '');
-  const page = await createAuthPage(keys.public, fingerprint);
   const controller = new AbortController();
   const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(options.loginTimeoutMs ?? 10 * 60 * 1000), ...(options.signal ? [options.signal] : [])]);
+  const page = await createPage(keys.public, fingerprint, { ...options, signal });
   const settings = { ...options, privateKey: keys.private };
   let terminal;
   const disconnect = () => terminal?.disconnect();
@@ -41,12 +42,16 @@ export async function authorizeSsh(options = {}, { Terminal = SshTerminal, pollD
     finally { await terminal.close(); terminal = undefined; }
   };
   const result = (async () => {
+    let lastIssue = 'SSH 公钥尚未关联到 HF 账号。请确认添加的是本次登录页上的完整公钥。';
     try {
       for (;;) {
         signal.throwIfAborted();
         let account;
         try {
           account = signedInAccount(await connect());
+          lastIssue = account
+            ? '已识别 HF 账号，正在验证密钥能否再次连接。'
+            : 'SSH 已连接，但未识别到已登录的 HF 账号。请确认添加的是本次登录页上的完整公钥。';
           if (account) {
             // A second connection proves that this is reusable authorization,
             // rather than an in-session /login that disappears on disconnect.
@@ -54,15 +59,23 @@ export async function authorizeSsh(options = {}, { Terminal = SshTerminal, pollD
             if (verified === account) {
               return { type: 'success', key: keys.private, metadata: { email: '@' + account, authMode: 'hf-ssh', sshFingerprint: fingerprint } };
             }
+            lastIssue = '再次连接时未识别到同一 HF 账号，等待公钥关联生效。';
           }
         } catch (error) {
-          if (signal.aborted || error.code !== 'hf_login_required') throw error;
+          if (signal.aborted) throw error;
+          if (error.code === 'hf_login_required' || error.level === 'client-authentication') {
+            lastIssue = 'SSH 公钥尚未关联到 HF 账号。请确认添加的是本次登录页上的完整公钥。';
+          } else if (isTransientSshError(error)) {
+            // Linking and verification both use fresh connections. A temporary
+            // connection failure must not invalidate the key being added.
+            lastIssue = `无法连接 ${settings.host ?? 'chat.hf.co'}:${settings.port ?? 22}：${error.message}。SSH 连接不经过 Magpie 的 HTTP 代理。`;
+          } else throw error;
         }
         await pollDelay(options.loginPollMs ?? 5000, undefined, { signal });
       }
     } catch (error) {
       const expired = signal.aborted && !controller.signal.aborted && !options.signal?.aborted;
-      return { type: 'failed', error: expired ? 'HF login timed out. Start sign-in again to get a new public key.' : error.message };
+      return { type: 'failed', error: expired ? `HF login timed out. ${lastIssue} 请重新发起登录并使用新的公钥。` : error.message };
     } finally {
       signal.removeEventListener('abort', disconnect);
       await page.close();
@@ -70,7 +83,7 @@ export async function authorizeSsh(options = {}, { Terminal = SshTerminal, pollD
   })();
   return {
     url: page.url,
-    instructions: `打开登录页，点击「复制公钥」，再点击「打开 HF 添加页面」并粘贴保存。添加成功后返回，插件会自动验证。登录页需在运行插件的机器上打开。\n\n终端或远程使用时，也可复制以下完整公钥并打开 ${HF_SSH_KEYS_URL}：\n\n${keys.public}\n\n指纹：${fingerprint}`,
+    instructions: `打开登录页，点击「复制公钥」，再点击「打开 HF 添加页面」并粘贴保存。添加成功后返回，插件会自动验证。${page.remote ? '临时 HTTPS 登录页可以在你的电脑浏览器中打开，登录结束后自动关闭。首次访问若提示 DNS 错误，请稍等再刷新。' : '登录页需在运行插件的机器上打开；跨设备访问请选 Cloudflare 远程登录。'}\n\n也可复制以下完整公钥并打开 ${HF_SSH_KEYS_URL}：\n\n${keys.public}\n\n指纹：${fingerprint}`,
     method: 'auto',
     callback: () => result,
     cancel: () => controller.abort(new DOMException('HF login canceled', 'AbortError')),
