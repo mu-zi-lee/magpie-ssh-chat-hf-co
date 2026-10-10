@@ -3,10 +3,12 @@ import { Readable } from 'node:stream';
 import { resolve } from 'node:path';
 import { createBridge, errorResponse } from '../src/bridge.mjs';
 import { BridgeError } from '../src/protocol.mjs';
+import { privateKeyFromAuth, readLocalAuth } from '../src/auth.mjs';
 
 const port = Number(process.env.MAGPIE_HF_PORT ?? 5695);
 if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid MAGPIE_HF_PORT');
-const bridge = createBridge({ stateDir: resolve('.local/ssh') });
+const stateDir = resolve('.local/ssh');
+const bridge = createBridge({ stateDir, getPrivateKey: async () => privateKeyFromAuth(await readLocalAuth(stateDir)) });
 const server = createServer(async (incoming, outgoing) => {
   const controller = new AbortController();
   incoming.on('aborted', () => controller.abort());

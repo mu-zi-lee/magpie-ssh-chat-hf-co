@@ -1,9 +1,20 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { MODEL, MAX_REPLY_CHARS, MAX_PROMPT_CHARS, prepareRequest, parseReply, assistantArea } from '../src/protocol.mjs';
+import { MODEL, MAX_REPLY_CHARS, MAX_PROMPT_CHARS, prepareRequest, parseReply, assistantArea, upstreamError } from '../src/protocol.mjs';
 
 const body = () => ({ model: MODEL, messages: [{ role: 'user', content: 'Read a file' }], tools: [{ type: 'function', function: { name: 'read_file', parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'], additionalProperties: false } } }] });
 const envelope = (req, reply) => `${req.start}\n${JSON.stringify(reply)}\n${req.end}`;
+
+test('terminal provider errors preserve billing, authorization and rate-limit status', () => {
+  for (const [status, code] of [[402, 'hf_insufficient_credits'], [401, 'hf_login_required'], [403, 'hf_login_required'], [429, 'hf_rate_limited'], [503, 'hf_upstream_error']]) {
+    const error = upstreamError(`error: ${status} Upstream error: {"error":{"message":"Provider refused"}}`);
+    assert.equal(error.status, status);
+    assert.equal(error.code, code);
+    assert.equal(error.message, 'HF SSH: Provider refused');
+  }
+  assert.equal(upstreamError('error: Network unavailable').status, 502);
+  assert.equal(upstreamError('MAGPIE_BEGIN\n{"content":"error: 402 Payment Required"}\nMAGPIE_END'), undefined);
+});
 
 test('tool calls validate against the declared schema and retain result history', () => {
   const request = prepareRequest(body());
@@ -47,7 +58,7 @@ test('enforces tool_choice and parallel_tool_calls', () => {
 });
 
 test('unsupported modalities, controls, model access and excessive prompts fail before SSH', () => {
-  assert.throws(() => prepareRequest({ ...body(), model: 'other/model' }), { status: 403, code: 'hf_login_required' });
+  assert.throws(() => prepareRequest({ ...body(), model: 'other/model' }), { status: 400, code: 'model_not_supported' });
   assert.throws(() => prepareRequest({ ...body(), stop: ['end'] }), { status: 400 });
   assert.throws(() => prepareRequest({ ...body(), messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: 'https://example.com/a.png' } }] }] }), { status: 400 });
   assert.throws(() => prepareRequest(body(), { maxPromptChars: 10 }), { status: 400 });

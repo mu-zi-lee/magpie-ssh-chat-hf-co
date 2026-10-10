@@ -3,8 +3,10 @@ import { resolve } from 'node:path';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { createBridge } from '../src/bridge.mjs';
 import { MODEL } from '../src/protocol.mjs';
+import { privateKeyFromAuth, readLocalAuth } from '../src/auth.mjs';
 
-const bridge = createBridge({ stateDir: resolve('.local/ssh') });
+const stateDir = resolve('.local/ssh');
+const bridge = createBridge({ stateDir, getPrivateKey: async () => privateKeyFromAuth(await readLocalAuth(stateDir)) });
 const reports = [];
 async function chat(body) {
   const started = Date.now();
@@ -19,7 +21,7 @@ async function chat(body) {
 
 try {
   const models = await (await bridge.fetch('http://localhost/v1/models')).json();
-  console.log(`Discovered ${models.data.length} models; anonymous SSH available: ${models.data.filter(m => m.ssh_available).length}`);
+  console.log(`Discovered ${models.data.length} models; supported SSH models: ${models.data.filter(m => m.ssh_available).length}`);
   const tools = [{ type: 'function', function: {
     name: 'read_file', description: 'Read the contents of a file.',
     parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'], additionalProperties: false },

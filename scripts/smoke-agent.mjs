@@ -8,12 +8,14 @@ import { ToolLoopAgent, tool, jsonSchema, stepCountIs } from 'ai';
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import { createBridge } from '../src/bridge.mjs';
 import { MODEL } from '../src/protocol.mjs';
+import { privateKeyFromAuth, readLocalAuth } from '../src/auth.mjs';
 
 const directory = await mkdtemp(join(tmpdir(), 'magpie-hf-agent-'));
 const fixture = Array.from({ length: 12 }, (_, i) => `  console.log("第${i + 1}行：世界", "quote:\\" backslash:\\\\ _*[]");`).join('\n') + '\n';
 const report = { at: new Date().toISOString(), model: MODEL, requests: [], tools: [] };
-const bridge = createBridge({ stateDir: resolve('.local/ssh') });
-const provider = createOpenAICompatible({ name: 'hf-ssh', apiKey: 'anonymous', baseURL: 'http://localhost/v1',
+const stateDir = resolve('.local/ssh');
+const bridge = createBridge({ stateDir, getPrivateKey: async () => privateKeyFromAuth(await readLocalAuth(stateDir)) });
+const provider = createOpenAICompatible({ name: 'hf-ssh', apiKey: 'hf-ssh', baseURL: 'http://localhost/v1',
   fetch: async (input, init) => {
     const started = Date.now();
     const response = await bridge.fetch(input, init);

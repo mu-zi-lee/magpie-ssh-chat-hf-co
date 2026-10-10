@@ -27,12 +27,12 @@ try {
   const locked = await fetch(`${base}/v1/chat/completions`, {
     method: 'POST', body: JSON.stringify({ model: 'other/model', messages: [{ role: 'user', content: 'hello' }] }),
   });
-  assert.equal(locked.status, 403);
-  assert.equal((await locked.json()).error.code, 'hf_login_required');
-  console.log('PASS unavailable models return 403 hf_login_required');
+  assert.equal(locked.status, 400);
+  assert.equal((await locked.json()).error.code, 'model_not_supported');
+  console.log('PASS unsupported models return 400 model_not_supported');
   const response = await fetch(`${base}/v1/chat/completions`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer anonymous' },
+    headers: { 'content-type': 'application/json', authorization: 'Bearer hf-ssh' },
     body: JSON.stringify({
       model: MODEL, stream: true,
       messages: [{ role: 'user', content: 'Call read_file for package.json.' }],

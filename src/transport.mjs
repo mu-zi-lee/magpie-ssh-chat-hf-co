@@ -1,5 +1,5 @@
 import { SshTerminal } from './terminal.mjs';
-import { assistantArea, parseReply, BridgeError } from './protocol.mjs';
+import { assistantArea, parseReply, upstreamError, BridgeError } from './protocol.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
 
 const transient = error => ['ECONNRESET', 'ECONNREFUSED', 'EPIPE', 'ENETUNREACH', 'EHOSTUNREACH', 'ETIMEDOUT', 'EAI_AGAIN'].includes(error.code) || /^(Timed out|SSH session closed)|handshake.*timeout/i.test(error.message);
@@ -22,7 +22,12 @@ export async function complete(request, options, signal, { Terminal = SshTermina
       let reply = '';
       await terminal.waitFor(screen => {
         reply = assistantArea(screen);
-        return reply.includes(request.end) && /┃ Ask anything/i.test(screen) && Date.now() - terminal.lastChange > 800;
+        const idle = /┃ Ask anything/i.test(screen) && Date.now() - terminal.lastChange > 800;
+        if (idle) {
+          const error = upstreamError(reply);
+          if (error) throw error;
+        }
+        return reply.includes(request.end) && idle;
       }, { timeout: options.timeoutMs ?? 150000, signal });
       return parseReply(reply, request);
     } catch (error) {

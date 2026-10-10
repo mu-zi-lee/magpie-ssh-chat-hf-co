@@ -8,6 +8,27 @@ import { SshTerminal } from '../src/terminal.mjs';
 import xterm from '@xterm/headless';
 import { MODEL, prepareRequest, parseReply, assistantArea } from '../src/protocol.mjs';
 
+test('HF login gates fail before the visible chat input is accepted as ready', async () => {
+  for (const gate of [
+    '🤗 Your SSH key is not linked to a Hugging Face account, log in below to chat with it.',
+    'open https://hf.co/oauth/device and enter\nABCD-EFGH\n⣷ waiting for you to approve',
+  ]) {
+    const terminal = {
+      screen: async () => `🤗 ssh chat ${MODEL}\n${gate}\n┃ Ask anything...`,
+      send: () => assert.fail('Login must fail without submitting input'),
+      waitFor: SshTerminal.prototype.waitFor,
+    };
+    await assert.rejects(SshTerminal.prototype.ready.call(terminal), {
+      status: 403, code: 'hf_login_required',
+    });
+  }
+  const terminal = {
+    screen: async () => `🤗 ssh chat ${MODEL} @anonymous\nHi! You are chatting anonymously.\nType /login to use your Hugging Face account.\n┃ Ask anything...`,
+    waitFor: SshTerminal.prototype.waitFor,
+  };
+  assert.match(await SshTerminal.prototype.ready.call(terminal), /@anonymous/);
+});
+
 test('wrapped terminal JSON preserves Unicode, spaces and escaped file newlines', async () => {
   const request = prepareRequest({ model: MODEL, messages: [{ role: 'user', content: 'hello' }] });
   const content = 'hello  世界    '.repeat(25) + '\nnext line\t"quoted"\\path';

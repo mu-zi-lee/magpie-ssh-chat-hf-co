@@ -13,13 +13,13 @@ export function normalizeCatalog(data) {
     unique.set(model.id, {
       ...model, object: 'model',
       ssh_available: model.id === MODEL,
-      ssh_access: model.id === MODEL ? 'anonymous' : 'hf_login_required_unverified',
+      ssh_access: model.id === MODEL ? 'linked_hf_account' : 'unsupported_unverified',
       ssh_tool_calling: model.id === MODEL ? 'experimental_json' : 'unverified',
-      ssh_billing: model.id === MODEL ? 'anonymous_no_account' : 'unverified',
+      ssh_billing: 'unverified',
     });
   }
   if (!unique.size) throw new BridgeError('Invalid Hugging Face model catalog');
-  if (!unique.has(MODEL)) unique.set(MODEL, { ...fallback, ssh_available: true, ssh_access: 'anonymous', ssh_tool_calling: 'experimental_json', ssh_billing: 'anonymous_no_account' });
+  if (!unique.has(MODEL)) unique.set(MODEL, { ...fallback, ssh_available: true, ssh_access: 'linked_hf_account', ssh_tool_calling: 'experimental_json', ssh_billing: 'unverified' });
   return [...unique.values()];
 }
 
@@ -74,7 +74,7 @@ export class ModelCatalog {
 
 export function magpieModel(model) {
   return {
-    name: `${model.id}${model.ssh_available ? ' (SSH · experimental tools)' : ' (HF login required)'}`,
+    name: `${model.id}${model.ssh_available ? ' (SSH · experimental tools)' : ' (SSH model switching unsupported)'}`,
     // The SSH textarea, rather than the model's API context, is the bottleneck.
     // Encourage early Agent compaction; the exact character guard is in protocol.
     limit: { context: 2000, output: 1000 },

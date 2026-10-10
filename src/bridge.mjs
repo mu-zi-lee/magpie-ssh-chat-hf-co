@@ -53,7 +53,11 @@ export function createBridge(options = {}, dependencies = {}) {
   const queue = new SerialQueue(maxQueuedRequests);
 
   function execute(request, signal) {
-    return queue.run(() => transport(request, settings, signal), signal);
+    return queue.run(async () => {
+      const privateKey = settings.getPrivateKey ? await settings.getPrivateKey() : settings.privateKey;
+      signal.throwIfAborted();
+      return transport(request, { ...settings, privateKey }, signal);
+    }, signal);
   }
 
   return {
@@ -102,9 +106,10 @@ export function createBridge(options = {}, dependencies = {}) {
             const event = delta => send(`data: ${JSON.stringify({ ...base, object: 'chat.completion.chunk', choices: [{ index: 0, delta, finish_reason: null }] })}\n\n`);
             const heartbeat = setInterval(() => send(': waiting for SSH model\n\n'), 2000);
             try {
-              event({ role: 'assistant' });
+              send(': waiting for SSH model\n\n');
               const message = await work;
               // Buffer until validation; incomplete JSON must never reach a tool executor.
+              event({ role: 'assistant' });
               if (message.content) event({ content: message.content });
               if (message.tool_calls) event({ tool_calls: message.tool_calls.map((call, index) => ({ index, ...call })) });
               send(`data: ${JSON.stringify({ ...base, object: 'chat.completion.chunk', choices: [{ index: 0, delta: {}, finish_reason: message.tool_calls?.length ? 'tool_calls' : 'stop' }] })}\n\n`);

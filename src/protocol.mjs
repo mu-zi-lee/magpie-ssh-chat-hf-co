@@ -20,7 +20,7 @@ export function prepareRequest(body, { maxPromptChars = MAX_PROMPT_CHARS } = {})
   if (!Number.isInteger(maxPromptChars) || maxPromptChars < 1) bad('maxPromptChars must be a positive integer');
   if (!body || typeof body !== 'object' || Array.isArray(body)) bad('Request must be an object');
   if (typeof body.model !== 'string' || !body.model) bad('model is required');
-  if (body.model !== MODEL) throw new BridgeError(`Anonymous SSH only supports ${MODEL}; selecting another model requires Hugging Face login, which this version does not yet automate`, 403, 'hf_login_required');
+  if (body.model !== MODEL) throw new BridgeError(`This plugin currently supports only ${MODEL}; switching SSH models is not implemented`, 400, 'model_not_supported');
   if (!Array.isArray(body.messages) || !body.messages.length) bad('messages must be a nonempty array');
   if (body.stream !== undefined && typeof body.stream !== 'boolean') bad('stream must be boolean');
   if (body.parallel_tool_calls !== undefined && typeof body.parallel_tool_calls !== 'boolean') bad('parallel_tool_calls must be boolean');
@@ -104,6 +104,26 @@ export function assistantArea(screen) {
   if (index < 0) return '';
   const end = lines.findIndex((line, i) => i > index && /^\s*┃/.test(line));
   return lines.slice(index + 1, end < 0 ? undefined : end).join('\n').trim();
+}
+
+export function upstreamError(reply) {
+  // Inspect only the assistant area, never the echoed prompt. A terminal
+  // provider failure has this prefix instead of a model JSON envelope.
+  const match = reply.match(/^error:\s*(?:(\d{3})\s+)?([\s\S]+)$/i);
+  if (!match) return undefined;
+  const status = Number(match[1]);
+  const code = status === 402 ? 'hf_insufficient_credits' : status === 401 || status === 403 ? 'hf_login_required'
+    : status === 429 ? 'hf_rate_limited' : 'hf_upstream_error';
+  let message = match[2].trim();
+  const jsonStart = message.indexOf('{');
+  if (jsonStart >= 0) {
+    try {
+      const body = JSON.parse(message.slice(jsonStart));
+      const detail = typeof body.error === 'string' ? body.error : body.error?.message;
+      if (typeof detail === 'string' && detail.trim()) message = detail;
+    } catch { /* Keep the visible error when the upstream body is not JSON. */ }
+  }
+  return new BridgeError(`HF SSH: ${message}`, status >= 400 && status <= 599 ? status : 502, code);
 }
 
 export function parseReply(text, request) {

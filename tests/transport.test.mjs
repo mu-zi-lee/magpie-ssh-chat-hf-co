@@ -1,10 +1,44 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { complete } from '../src/transport.mjs';
-import { MODEL, prepareRequest } from '../src/protocol.mjs';
+import { BridgeError, MODEL, prepareRequest } from '../src/protocol.mjs';
 
 const request = () => prepareRequest({ model: MODEL, messages: [{ role: 'user', content: 'hello' }] });
 const disconnected = () => Object.assign(new Error('socket reset'), { code: 'ECONNRESET' });
+
+test('HF login refusal preserves its error code, closes SSH and never sends or retries', async () => {
+  let connections = 0, closed = 0;
+  class LoginGate {
+    constructor() { connections++; }
+    async ready() { throw new BridgeError('HF login required', 403, 'hf_login_required'); }
+    async paste() { assert.fail('Must not send prompts to the login screen'); }
+    async close() { closed++; }
+  }
+  await assert.rejects(complete(request(), {}, undefined, { Terminal: LoginGate }), {
+    status: 403, code: 'hf_login_required',
+  });
+  assert.equal(connections, 1);
+  assert.equal(closed, 1);
+});
+
+test('a terminal billing error returns immediately, preserves HTTP 402 and never retries', async () => {
+  let connections = 0, closed = 0;
+  class Terminal {
+    constructor() { connections++; this.lastChange = 0; }
+    async ready() {}
+    async paste() {}
+    async waitFor(predicate) {
+      predicate(`🤗 ${MODEL}\nerror: 402 Payment Required: {"error":"You have no remaining credits."}\n┃ Ask anything`);
+      assert.fail('Billing failures must be recognized before waiting for a JSON marker');
+    }
+    async close() { closed++; }
+  }
+  await assert.rejects(complete(request(), {}, undefined, { Terminal }), {
+    status: 402, code: 'hf_insufficient_credits', message: 'HF SSH: You have no remaining credits.',
+  });
+  assert.equal(connections, 1);
+  assert.equal(closed, 1);
+});
 
 test('a dropped connection before dispatch reconnects and sends the prompt once', async () => {
   const req = request();

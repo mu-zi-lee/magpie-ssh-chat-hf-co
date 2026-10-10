@@ -1,5 +1,6 @@
 // Developer integration check against Magpie's official standalone Bun host.
-// No login RPC and no executable in PATH are allowed in the child process.
+// Uses credentials from scripts/login.mjs, without exposing the private key.
+// No executable in PATH is allowed in the child process.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
@@ -7,9 +8,12 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { MODEL } from '../src/protocol.mjs';
+import { privateKeyFromAuth, readLocalAuth } from '../src/auth.mjs';
 
 const [hostPath, pluginPath = process.cwd()] = process.argv.slice(2);
 if (!hostPath) throw new Error('Developer usage: bun scripts/smoke-host.mjs /path/to/magpie/internal/plugin/host.js [installed-plugin-directory]');
+const credentials = await readLocalAuth(resolve('.local/ssh'));
+privateKeyFromAuth(credentials);
 const directory = await mkdtemp(join(tmpdir(), 'magpie-hf-automatic-'));
 const child = spawn(process.execPath, [resolve(hostPath)], {
   env: { ...process.env, PATH: '' }, stdio: ['pipe', 'pipe', 'pipe'],
@@ -52,28 +56,32 @@ function rpc(method, params) {
 try {
   const authPath = join(directory, 'plugin-auth.json');
   // Verify that automatic setup does not erase another provider's credentials.
-  await writeFile(authPath, JSON.stringify({ 'unrelated-test': { type: 'api', key: 'preserve-me' } }));
+  await writeFile(authPath, JSON.stringify({ 'hf-ssh': credentials, 'unrelated-test': { type: 'api', key: 'preserve-me' } }), { mode: 0o600 });
   const { result } = await rpc('init', {
     directory, authPath,
     plugins: [{ spec: resolve(pluginPath), target: resolve(pluginPath) }],
   });
   assert.ok(!result.plugins[0].error, result.plugins[0].error);
   const auth = JSON.parse(await readFile(authPath, 'utf8'));
-  assert.equal(auth['hf-ssh'].key, 'anonymous');
+  assert.equal(auth['hf-ssh'].key, credentials.key);
   assert.equal(auth['unrelated-test'].key, 'preserve-me');
   const providers = (await rpc('providers', {})).result;
   assert.equal(providers[0].signedIn, true);
   assert.equal(providers[0].models[0].id, MODEL);
-  console.log('PASS official Magpie host: automatically connected account, no login RPC, no tools in PATH');
+  assert.equal(providers[0].methods[0].type, 'oauth');
+  const loader = (await rpc('load', { provider: 'hf-ssh' })).result;
+  assert.equal(loader.apiKey, 'hf-ssh');
+  assert.ok(!JSON.stringify(loader).includes('PRIVATE KEY'));
+  console.log('PASS official Magpie host: browser login method, saved SSH account, private key stays out of HTTP credentials');
   const response = await rpc('fetch', {
     provider: 'hf-ssh', model: MODEL, npm: '@ai-sdk/openai-compatible',
     url: 'http://127.0.0.1/hf-ssh/v1/chat/completions', method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: Buffer.from(JSON.stringify({ model: MODEL, messages: [{ role: 'user', content: 'Say exactly AUTO_SETUP_OK.' }], stream: true, max_tokens: 100, temperature: 0.7 })).toString('base64'),
+    body: Buffer.from(JSON.stringify({ model: MODEL, messages: [{ role: 'user', content: 'Say exactly LINKED_ACCOUNT_OK.' }], stream: true, max_tokens: 100, temperature: 0.7 })).toString('base64'),
   });
   assert.equal(response.events.find(event => event.event === 'head').status, 200);
   const text = response.events.filter(event => event.event === 'chunk').map(event => Buffer.from(event.data, 'base64').toString()).join('');
-  assert.ok(text.includes('AUTO_SETUP_OK'), text);
+  assert.ok(text.includes('LINKED_ACCOUNT_OK'), text);
   assert.ok(text.includes('data: [DONE]'), text);
   assert.ok(!text.includes('"error"'), text);
   console.log('PASS real HF reply through the official Bun host with only the plugin installed');

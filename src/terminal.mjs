@@ -1,7 +1,7 @@
 import ssh2 from 'ssh2';
 import xterm from '@xterm/headless';
 import { verifyHostKey } from './host-key.mjs';
-import { MAX_REPLY_CHARS } from './protocol.mjs';
+import { BridgeError, MAX_REPLY_CHARS } from './protocol.mjs';
 
 export class SshTerminal {
   constructor(options) {
@@ -53,13 +53,14 @@ export class SshTerminal {
         channel.on('close', () => { this.exited = true; this.connection.end(); });
       });
     });
-    // Keys stay in memory. Neither a system SSH client nor ssh-keygen is used.
+    // Linked accounts reuse the plugin key saved by the host. Probes may still
+    // use an ephemeral key. Neither a system SSH client nor ssh-keygen is used.
     // ssh2 1.17 strips leading zero bytes from Ed25519 public keys during
     // generation, occasionally producing malformed keys. ECDSA avoids that path.
-    const keys = ssh2.utils.generateKeyPairSync('ecdsa', { bits: 256, comment: 'magpie-hf-ssh-anonymous' });
+    const privateKey = this.options.privateKey ?? ssh2.utils.generateKeyPairSync('ecdsa', { bits: 256, comment: 'magpie-hf-ssh-anonymous' }).private;
     this.connection.connect({
       host: this.options.host, port: this.options.port, username: this.options.user,
-      privateKey: keys.private, authHandler: ['publickey'],
+      privateKey, authHandler: ['publickey'],
       readyTimeout: this.options.connectTimeoutMs ?? 15000,
       keepaliveInterval: 10000, keepaliveCountMax: 2,
       hostVerifier: (key, callback) => {
@@ -105,6 +106,12 @@ export class SshTerminal {
     while (Date.now() < deadline) {
       signal?.throwIfAborted();
       const screen = await this.screen();
+      // HF can show a login gate and the chat input at the same time. The
+      // input alone does not mean this temporary key is allowed to chat.
+      if (/^\s*(?:🤗\s*)?Your SSH key is not linked to a Hugging Face account\b/im.test(screen) ||
+          (/https:\/\/(?:hf\.co|huggingface\.co)\/oauth\/device\b/i.test(screen) && /waiting for you to approve/i.test(screen))) {
+        throw new BridgeError('Hugging Face requires this SSH key to be linked to an account. Sign in with the browser login method, then retry.', 403, 'hf_login_required');
+      }
       if (predicate(screen)) return screen;
       if (this.error) throw this.error;
       if (this.exited) throw new Error(`SSH session closed: ${screen.trim().slice(-1000)}`);

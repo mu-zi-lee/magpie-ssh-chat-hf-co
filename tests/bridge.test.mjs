@@ -2,10 +2,37 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createBridge } from '../src/bridge.mjs';
 import { ModelCatalog, normalizeCatalog } from '../src/models.mjs';
-import { MODEL } from '../src/protocol.mjs';
+import { BridgeError, MODEL } from '../src/protocol.mjs';
 import { HuggingFaceSshPlugin } from '../index.mjs';
 
 const request = (bridge, body = {}) => bridge.fetch('http://localhost/v1/chat/completions', { method: 'POST', body: JSON.stringify({ model: MODEL, messages: [{ role: 'user', content: 'hi' }], ...body }) });
+
+test('HF login refusal reaches JSON and SSE clients and releases the queue', async () => {
+  const bridge = createBridge({ maxQueuedRequests: 1 }, { complete: async () => {
+    throw new BridgeError('HF login required', 403, 'hf_login_required');
+  } });
+  const response = await request(bridge);
+  assert.equal(response.status, 403);
+  assert.equal((await response.json()).error.code, 'hf_login_required');
+  const text = await (await request(bridge, { stream: true })).text();
+  assert.match(text, /"code":"hf_login_required"/);
+  assert.ok(!text.includes('"finish_reason":"stop"'));
+  assert.ok(text.endsWith('data: [DONE]\n\n'));
+  assert.equal((await request(bridge)).status, 403);
+});
+
+test('upstream credit exhaustion reaches JSON and SSE clients without a timeout', async () => {
+  const bridge = createBridge({}, { complete: async () => {
+    throw new BridgeError('HF SSH: You have no remaining credits.', 402, 'hf_insufficient_credits');
+  } });
+  const response = await request(bridge);
+  assert.equal(response.status, 402);
+  assert.equal((await response.json()).error.code, 'hf_insufficient_credits');
+  const sse = await (await request(bridge, { stream: true })).text();
+  assert.match(sse, /"code":"hf_insufficient_credits"/);
+  assert.ok(!sse.includes('"role":"assistant"'));
+  assert.ok(!sse.includes('"finish_reason":"stop"'));
+});
 
 test('OpenAI JSON and SSE retain tool call identifiers and finish_reason', async () => {
   const message = { role: 'assistant', content: null, tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'read_file', arguments: '{"path":"a"}' } }] };
@@ -115,7 +142,8 @@ test('offline catalog uses a retry cooldown while preserving access and billing 
   assert.equal(calls, 1);
   assert.equal((await catalog.list()).stale, true);
   assert.equal(calls, 1);
-  assert.equal(results[0].data[0].ssh_billing, 'anonymous_no_account');
+  assert.equal(results[0].data[0].ssh_billing, 'unverified');
+  assert.equal(results[0].data[0].ssh_access, 'linked_hf_account');
   const models = normalizeCatalog([{ id: MODEL }, { id: 'other/model', providers: [{ is_free: true }] }]);
   assert.equal(models[1].ssh_available, false);
   assert.equal(models[1].ssh_billing, 'unverified');
@@ -139,14 +167,14 @@ test('timed-out work releases the queue and JSON/SSE report the same abort code'
   } finally { clearInterval(keepAlive); }
 });
 
-test('plugin has one function export, preserves user configuration and needs no upstream API key', async () => {
+test('plugin has one function export, preserves configuration and exposes browser authentication', async () => {
   const exported = await import('../index.mjs');
   assert.equal(Object.values(exported).filter(item => typeof item === 'function').length, 1);
   const hooks = await HuggingFaceSshPlugin({ directory: '/tmp' });
   const config = { provider: { 'hf-ssh': { name: 'User settings' } } };
   await hooks.config(config);
   assert.equal(config.provider['hf-ssh'].name, 'User settings');
-  assert.equal((await hooks.auth.methods[0].authorize()).key, 'anonymous');
+  assert.equal(hooks.auth.methods[0].type, 'oauth');
   const loader = await hooks.auth.loader(async () => ({ type: 'api', key: 'anonymous' }));
   assert.equal(typeof loader.fetch, 'function');
 });

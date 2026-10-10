@@ -1,11 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { verifyHostKey } from '../src/host-key.mjs';
-import { ensureAnonymousAccount, ANONYMOUS_AUTH } from '../src/anonymous-auth.mjs';
 import { HuggingFaceSshPlugin } from '../index.mjs';
+import { MODEL } from '../src/protocol.mjs';
 
 async function temporary(action) {
   const directory = await mkdtemp(join(tmpdir(), 'hf-ssh-test-'));
@@ -26,32 +26,17 @@ test('concurrent initialization agrees on one host key', () => temporary(async d
   assert.deepEqual(accepted, Array(6).fill(true));
 }));
 
-test('Magpie installs automatically register an anonymous account through the SDK', () => temporary(async directory => {
-  const calls = [];
-  await ensureAnonymousAccount({ project: { id: 'magpie' }, directory, client: { auth: { set: async value => calls.push(value) } } });
-  assert.deepEqual(calls, [{ path: { id: 'hf-ssh' }, body: ANONYMOUS_AUTH }]);
+test('installing the plugin offers browser login without creating or overwriting accounts', () => temporary(async directory => {
+  const plugin = await HuggingFaceSshPlugin({ project: { id: 'magpie' }, directory,
+    client: { auth: { set: () => assert.fail('Installation must not mark an account as authenticated') } },
+  });
+  assert.equal(plugin.auth.methods[0].type, 'oauth');
+  assert.equal(plugin.auth.methods.length, 1);
+  const loader = await plugin.auth.loader(async () => ({ type: 'api', key: 'anonymous' }));
+  assert.equal(loader.apiKey, 'hf-ssh');
+  const response = await loader.fetch('http://localhost/v1/chat/completions', {
+    method: 'POST', body: JSON.stringify({ model: MODEL, messages: [{ role: 'user', content: 'hi' }] }),
+  });
+  assert.equal(response.status, 403);
+  assert.equal((await response.json()).error.code, 'hf_login_required');
 }));
-
-test('automatic setup preserves an existing provider account and unrelated credentials', () => temporary(async directory => {
-  for (const accounts of [{ 'hf-ssh': { type: 'api', key: 'existing' }, other: { key: 'secret' } }, { 'hf-ssh#other': { type: 'oauth', access: 'existing' } }]) {
-    const path = join(directory, 'plugin-auth.json');
-    await writeFile(path, JSON.stringify(accounts));
-    const before = await readFile(path, 'utf8');
-    await ensureAnonymousAccount({ project: { id: 'magpie' }, directory, client: { auth: { set: async () => { throw new Error('Must not overwrite'); } } } });
-    assert.equal(await readFile(path, 'utf8'), before);
-  }
-}));
-
-test('autoConnect can be disabled; corrupt auth files fail without replacing credentials', () => temporary(async directory => {
-  const input = { project: { id: 'magpie' }, directory, client: { auth: { set: async () => { throw new Error('Must not write'); } } } };
-  await ensureAnonymousAccount(input, { autoConnect: false });
-  await writeFile(join(directory, 'plugin-auth.json'), '{incomplete');
-  await assert.rejects(ensureAnonymousAccount(input));
-}));
-
-test('anonymous loader works without a manually entered key', async () => {
-  const plugin = await HuggingFaceSshPlugin();
-  const loader = await plugin.auth.loader(async () => undefined);
-  assert.equal(loader.apiKey, 'anonymous');
-  assert.equal(typeof loader.fetch, 'function');
-});
