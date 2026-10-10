@@ -13,11 +13,13 @@ magpie plugin add github:mu-zi-lee/magpie-ssh-chat-hf-co
 ```
 
 1. 在供应商 `hf-ssh` 中选择 **Hugging Face 浏览器登录（链接认证）**。
-2. 打开提供的 HF 链接，登录账号，将插件显示的公钥添加到 **SSH Keys**，名称可填 `Magpie HF SSH`。
+2. 在打开的登录页点击 **复制公钥**，再点击 **打开 HF 添加页面**。登录账号，将公钥粘贴到 **SSH Keys** 的 Key 输入框，名称可填 `Magpie HF SSH`。
 3. 添加成功后返回 Magpie。插件自动验证密钥，再保存登录配置。
 4. 选择 **Hugging Face SSH Chat (experimental)** 下的 `Qwen/Qwen3.8-27B`。
 
 旧版的 `anonymous` 配置需要重新登录。认证通过 HF 官方的公钥关联页面完成；仅使用 SSH `/login` 设备码授权，实测不能保留到下一次连接。
+
+复制公钥的登录页仅在本次登录期间监听本机，需要在运行插件的机器上打开。远程运行时，可从登录说明或终端复制完整公钥，直接到 HF 的 SSH Keys 页面添加。
 
 Magpie 会准备运行时和依赖，无需额外安装 Python、OpenSSH 或 Node.js，也无需手动启动服务。运行机器需能访问 `chat.hf.co:22` 和 [HF 模型目录](https://router.huggingface.co/v1/models)。SSH 连接不经过 Magpie 的 HTTP 代理。
 
@@ -29,7 +31,7 @@ Magpie 会准备运行时和依赖，无需额外安装 Python、OpenSSH 或 Nod
 git clone https://github.com/mu-zi-lee/magpie-ssh-chat-hf-co.git
 cd magpie-ssh-chat-hf-co
 bun install --frozen-lockfile --ignore-scripts
-bun scripts/login.mjs  # 打开输出的 HF 链接，添加显示的 SSH 公钥
+bun scripts/login.mjs  # 打开输出的登录页，复制公钥并到 HF 添加
 bun scripts/serve.mjs
 ```
 

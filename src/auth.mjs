@@ -5,6 +5,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { join } from 'node:path';
 import { SshTerminal } from './terminal.mjs';
 import { BridgeError } from './protocol.mjs';
+import { createAuthPage, HF_SSH_KEYS_URL } from './auth-page.mjs';
 
 export function signedInAccount(screen) {
   const match = screen.match(/^\s*🤗\s+ssh chat\s+[^\n]+?\s+@([a-z0-9][a-z0-9_.-]*)\s*$/im);
@@ -26,6 +27,7 @@ export function privateKeyFromAuth(auth) {
 export async function authorizeSsh(options = {}, { Terminal = SshTerminal, pollDelay = delay } = {}) {
   const keys = ssh2.utils.generateKeyPairSync('ecdsa', { bits: 256, comment: 'magpie-hf-ssh' });
   const fingerprint = 'SHA256:' + createHash('sha256').update(ssh2.utils.parseKey(keys.private).getPublicSSH()).digest('base64').replace(/=+$/, '');
+  const page = await createAuthPage(keys.public, fingerprint);
   const controller = new AbortController();
   const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(options.loginTimeoutMs ?? 10 * 60 * 1000), ...(options.signal ? [options.signal] : [])]);
   const settings = { ...options, privateKey: keys.private };
@@ -61,11 +63,14 @@ export async function authorizeSsh(options = {}, { Terminal = SshTerminal, pollD
     } catch (error) {
       const expired = signal.aborted && !controller.signal.aborted && !options.signal?.aborted;
       return { type: 'failed', error: expired ? 'HF login timed out. Start sign-in again to get a new public key.' : error.message };
-    } finally { signal.removeEventListener('abort', disconnect); }
+    } finally {
+      signal.removeEventListener('abort', disconnect);
+      await page.close();
+    }
   })();
   return {
-    url: 'https://huggingface.co/settings/keys/add?type=ssh',
-    instructions: `登录 Hugging Face，在 SSH Keys 页面添加以下公钥，名称可填 Magpie HF SSH。添加成功后返回，插件会自动验证。请只复制以 ecdsa-sha2-nistp256 开头的这一行：\n\n${keys.public}\n\n指纹：${fingerprint}`,
+    url: page.url,
+    instructions: `打开登录页，点击「复制公钥」，再点击「打开 HF 添加页面」并粘贴保存。添加成功后返回，插件会自动验证。登录页需在运行插件的机器上打开。\n\n终端或远程使用时，也可复制以下完整公钥并打开 ${HF_SSH_KEYS_URL}：\n\n${keys.public}\n\n指纹：${fingerprint}`,
     method: 'auto',
     callback: () => result,
     cancel: () => controller.abort(new DOMException('HF login canceled', 'AbortError')),

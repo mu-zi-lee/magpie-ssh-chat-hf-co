@@ -29,7 +29,7 @@ test('browser linking waits for approval and verifies two connections with the s
   }
   const login = await authorizeSsh({}, { Terminal, pollDelay: async () => { waiting(); await approved; } });
   assert.equal(login.method, 'auto');
-  assert.equal(login.url, 'https://huggingface.co/settings/keys/add?type=ssh');
+  assert.equal(new URL(login.url).hostname, '127.0.0.1');
   const publicKey = login.instructions.match(/ecdsa-sha2-nistp256 [A-Za-z0-9+/=]+ magpie-hf-ssh/)[0];
   assert.ok(ssh2.utils.parseKey(publicKey).getPublicSSH());
   assert.ok(!login.instructions.includes('PRIVATE KEY'));
@@ -37,6 +37,13 @@ test('browser linking waits for approval and verifies two connections with the s
   const callback = login.callback().then(result => { settled = true; return result; });
   await waitingForLink;
   assert.equal(settled, false);
+  const pageResponse = await fetch(login.url);
+  assert.equal(pageResponse.status, 200);
+  const page = await pageResponse.text();
+  assert.ok(page.includes(publicKey));
+  assert.ok(page.includes('复制公钥'));
+  assert.ok(page.includes('https://huggingface.co/settings/keys/add?type=ssh'));
+  assert.ok(!page.includes('PRIVATE KEY'));
   approve();
   const result = await callback;
   assert.equal(result.type, 'success');
@@ -48,6 +55,7 @@ test('browser linking waits for approval and verifies two connections with the s
   assert.ok(instances.every(instance => instance.closed === 1));
   assert.deepEqual(ssh2.utils.parseKey(result.key).getPublicSSH(), ssh2.utils.parseKey(publicKey).getPublicSSH());
   assert.deepEqual(await login.callback(), result);
+  await assert.rejects(fetch(login.url));
 });
 
 test('a login that fails on verification never returns a credential', async () => {
@@ -76,6 +84,7 @@ test('canceling an unfinished login disconnects SSH and leaves no successful res
   assert.equal((await login.callback()).type, 'failed');
   assert.equal(closed, 1);
   assert.equal(disconnected, 1);
+  await assert.rejects(fetch(login.url));
 });
 
 test('an abandoned browser link expires without saving a private key', async () => {
